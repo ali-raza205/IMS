@@ -6,6 +6,7 @@
 #   * Remove `managed = False` lines if you wish to allow Django to create, modify, and delete the table
 # Feel free to rename the models, but don't rename db_table values or field names.
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
 
 
@@ -24,7 +25,7 @@ class Donation(models.Model):
     donation_no = models.CharField(unique=True, max_length=50)
     donor = models.ForeignKey('Donors', models.DO_NOTHING)
     donation_date = models.DateField()
-    warehouse = models.ForeignKey('Locations', models.DO_NOTHING)
+    storage_location = models.ForeignKey('StorageLocation', models.DO_NOTHING, db_column='warehouse_id')
     reference_no = models.CharField(max_length=100, blank=True, null=True)
     remarks = models.TextField(blank=True, null=True)
     created_by = models.BigIntegerField(blank=True, null=True)
@@ -37,6 +38,7 @@ class Donation(models.Model):
     manufacturing_date = models.DateField(blank=True, null=True)
     expiry_date = models.DateField(blank=True, null=True)
     sto_shed = models.ForeignKey('StorageShed', models.DO_NOTHING, blank=True, null=True)
+    received_date = models.DateField(blank=True, null=True)
 
     class Meta:
         managed = False
@@ -123,7 +125,7 @@ class Locations(models.Model):
 class PurchaseOrder(models.Model):
     po_id = models.BigAutoField(primary_key=True)
     proc_date = models.DateField(blank=True, null=True)
-    location = models.ForeignKey(Locations, models.DO_NOTHING, blank=True, null=True)
+    storage_location = models.ForeignKey('StorageLocation', models.DO_NOTHING, db_column='location_id', blank=True, null=True)
     po_number = models.CharField(unique=True, max_length=50, blank=True, null=True)
     supplier = models.ForeignKey('Suppliers', models.DO_NOTHING, blank=True, null=True)
     invoice_no = models.CharField(max_length=100, blank=True, null=True)
@@ -138,6 +140,7 @@ class PurchaseOrder(models.Model):
     manufacturing_date = models.DateField(blank=True, null=True)
     expiry_date = models.DateField(blank=True, null=True)
     sto_shed = models.ForeignKey('StorageShed', models.DO_NOTHING, blank=True, null=True)
+    received_date = models.DateField(blank=True, null=True)
 
     class Meta:
         managed = False
@@ -175,6 +178,7 @@ class Stock(models.Model):
 class StockTransaction(models.Model):
     transection_id = models.BigAutoField(primary_key=True)
     stock = models.ForeignKey(Stock, models.DO_NOTHING)
+    # storage_location ids (st_loc_id)
     from_warehouse = models.BigIntegerField()
     to_warehouse = models.BigIntegerField()
     quantity = models.DecimalField(max_digits=20, decimal_places=4)
@@ -189,6 +193,7 @@ class StockTransaction(models.Model):
 
 
 class StorageLocation(models.Model):
+    """A warehouse. `location` is the area (district) it is established in."""
     st_loc_id = models.BigAutoField(primary_key=True)
     location = models.ForeignKey(Locations, models.DO_NOTHING)
     type = models.ForeignKey('StorageType', models.DO_NOTHING)
@@ -200,6 +205,9 @@ class StorageLocation(models.Model):
     class Meta:
         managed = False
         db_table = 'storage_location'
+
+    def __str__(self):
+        return self.details or f'Storage location {self.st_loc_id}'
 
 
 class StorageShed(models.Model):
@@ -249,20 +257,33 @@ class Units(models.Model):
 
 
 class UserProfile(models.Model):
-    """Ties a login to a location. Master users (and superusers) see every location."""
+    """
+    Ties a login to a storage location. Master users (and superusers) see every storage location.
+    All areas users work on records of every storage location but, unlike master users,
+    cannot edit or delete shared lookup data or change areas and storage locations.
+    """
     ROLE_MASTER = 'master'
+    ROLE_ALL_AREAS = 'all_areas'
     ROLE_LOCATION = 'location'
     ROLE_CHOICES = [
         (ROLE_MASTER, 'Master'),
-        (ROLE_LOCATION, 'Location user'),
+        (ROLE_ALL_AREAS, 'All areas user'),
+        (ROLE_LOCATION, 'Storage location user'),
     ]
 
     user = models.OneToOneField(settings.AUTH_USER_MODEL, models.CASCADE, related_name='profile')
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default=ROLE_LOCATION)
-    location = models.ForeignKey(Locations, models.PROTECT, blank=True, null=True, related_name='users')
+    storage_location = models.ForeignKey(
+        StorageLocation, models.PROTECT, db_column='Sto_location_id', blank=True, null=True, related_name='users'
+    )
 
     class Meta:
         db_table = 'user_profile'
 
     def __str__(self):
         return f'{self.user} ({self.get_role_display()})'
+
+    def clean(self):
+        # Without a storage location a non-master user sees no records at all.
+        if self.role == self.ROLE_LOCATION and self.storage_location_id is None:
+            raise ValidationError({'storage_location': 'Storage location users need a storage location.'})

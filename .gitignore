@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environments
+.venv/
+venv/
+IMS_venv/
+
+# Machine-specific settings and server runtime files
+IMS/IMS/local_settings.py
+IMS/serve.pid
+IMS/update.log
+IMS/staticfiles/
+
+# Data files and deploy packages kept next to the project
+*.zip
+*.xlsx
+~$*

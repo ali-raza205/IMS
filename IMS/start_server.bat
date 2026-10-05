@@ -1,19 +1,20 @@
 @echo off
 REM Starts the IMS app in production mode with Waitress.
-REM Run install.bat once before the first start.
+REM Before the first start: run install.bat and create IMS\local_settings.py (see DEPLOY.md).
+REM The server restarts by itself whenever it stops, e.g. when update.bat installs a new version.
 cd /d "%~dp0"
 
 set DJANGO_DEBUG=False
-REM Set these for your server before going live:
-REM set DJANGO_SECRET_KEY=replace-with-a-long-random-string
-REM set DJANGO_ALLOWED_HOSTS=192.168.0.44,localhost
-REM set WAITRESS_PORT=8000
 
 if exist "venv\Scripts\activate.bat" (
     call "venv\Scripts\activate.bat"
-) else (
+) else if exist "..\IMS_venv\Scripts\activate.bat" (
     call "..\IMS_venv\Scripts\activate.bat"
 )
 
+:run
 python manage.py collectstatic --noinput
 python serve.py
+echo [%date% %time%] Server stopped - restarting in 5 seconds (close this window to stop it for good).
+timeout /t 5 /nobreak >nul
+goto run

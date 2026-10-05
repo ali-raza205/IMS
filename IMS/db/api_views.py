@@ -1,7 +1,10 @@
+import json
+import logging
+
 from django.db.models import Count, F, Q, Sum
 from django.shortcuts import get_object_or_404
 from rest_framework import viewsets
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import SAFE_METHODS, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
@@ -29,6 +32,8 @@ from .permissions import (
     IsMasterOrReadOnly,
     LocationScopedMixin,
     limit_to_location,
+    sees_all_locations,
+    user_location_id,
 )
 from .serializers import (
     CategoriesSerializer,
@@ -64,7 +69,7 @@ class LoginView(TokenObtainPairView):
 
 
 class MeView(APIView):
-    """GET /api/auth/me/ returns the logged-in user's role and location."""
+    """GET /api/auth/me/ returns the logged-in user's role and storage location."""
 
     def get(self, request):
         return Response(user_info(request.user))
@@ -72,7 +77,27 @@ class MeView(APIView):
 
 # --- Shared master data: everyone reads and adds, only master users edit or delete ---
 
-class MasterDataViewSet(viewsets.ModelViewSet):
+logger = logging.getLogger('db.submit')
+
+
+class LogSubmitMixin:
+    """Prints every submit (add, edit, delete) to the server console before it is validated and saved."""
+
+    def initial(self, request, *args, **kwargs):
+        if request.method not in SAFE_METHODS:
+            data = request.data.dict() if hasattr(request.data, 'dict') else request.data
+            logger.info('%s %s by %s: %s', request.method, request.get_full_path(), request.user,
+                        json.dumps(data, default=str, ensure_ascii=False))
+        super().initial(request, *args, **kwargs)
+
+    def finalize_response(self, request, response, *args, **kwargs):
+        if request.method not in SAFE_METHODS and response.status_code >= 400:
+            logger.warning('%s %s rejected (%s): %s', request.method, request.get_full_path(),
+                           response.status_code, json.dumps(response.data, default=str, ensure_ascii=False))
+        return super().finalize_response(request, response, *args, **kwargs)
+
+
+class MasterDataViewSet(LogSubmitMixin, viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsMasterOrCreateOnly]
 
 
@@ -121,9 +146,34 @@ class ItemsViewSet(MasterDataViewSet):
             serializer.save()
 
 
+def storage_location_param(request):
+    """The `?storage_location=<id>` filter, or None."""
+    value = request.query_params.get('storage_location')
+    return int(value) if value and value.isdigit() else None
+
+
 class ShedViewSet(MasterDataViewSet):
+    """
+    Only sheds that exist at a storage location: the user's own, or `?storage_location=<id>`.
+    Master and all areas users see every shed when no storage location is given.
+    """
     queryset = Shed.objects.all()
     serializer_class = ShedSerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        user = self.request.user
+        location_id = storage_location_param(self.request)
+        if not sees_all_locations(user):
+            own = user_location_id(user)
+            if location_id is not None and location_id != own:
+                return queryset.none()
+            location_id = own
+            if location_id is None:
+                return queryset.none()
+        if location_id is not None:
+            queryset = queryset.filter(storageshed__sto_loc_id=location_id).distinct()
+        return queryset
 
 
 class StorageTypeViewSet(MasterDataViewSet):
@@ -131,52 +181,62 @@ class StorageTypeViewSet(MasterDataViewSet):
     serializer_class = StorageTypeSerializer
 
 
-class LocationsViewSet(viewsets.ModelViewSet):
-    """Everyone sees all locations (e.g. to pick a transfer destination); only master users change them."""
+class LocationsViewSet(LogSubmitMixin, viewsets.ModelViewSet):
+    """Areas (districts) warehouses are established in. Everyone sees all; only master users change them."""
     queryset = Locations.objects.all()
     serializer_class = LocationsSerializer
     permission_classes = [IsAuthenticated, IsMasterOrReadOnly]
 
 
-# --- Location data: location users only see and change their own location ---
+class StorageLocationViewSet(LogSubmitMixin, viewsets.ModelViewSet):
+    """Everyone sees all storage locations (e.g. to pick a transfer destination); only master users change them."""
+    queryset = StorageLocation.objects.select_related('location', 'type')
+    serializer_class = StorageLocationSerializer
+    permission_classes = [IsAuthenticated, IsMasterOrReadOnly]
 
-class DonationViewSet(LocationScopedMixin, viewsets.ModelViewSet):
-    queryset = Donation.objects.select_related('donor', 'warehouse', 'item')
+
+# --- Storage location data: location users only see and change their own storage location ---
+
+class DonationViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.ModelViewSet):
+    queryset = Donation.objects.select_related('donor', 'storage_location__location', 'item')
     serializer_class = DonationSerializer
     created_by_field = 'created_by'
 
 
-class PurchaseOrderViewSet(LocationScopedMixin, viewsets.ModelViewSet):
-    queryset = PurchaseOrder.objects.select_related('location', 'supplier', 'item')
+class PurchaseOrderViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.ModelViewSet):
+    queryset = PurchaseOrder.objects.select_related('storage_location__location', 'supplier', 'item')
     serializer_class = PurchaseOrderSerializer
     created_by_field = 'created_by'
 
 
-class GoodsReceiptViewSet(LocationScopedMixin, viewsets.ModelViewSet):
+class GoodsReceiptViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.ModelViewSet):
     queryset = GoodsReceipt.objects.select_related('po__supplier', 'item')
     serializer_class = GoodsReceiptSerializer
     created_by_field = 'received_by'
 
 
-class StorageLocationViewSet(LocationScopedMixin, viewsets.ModelViewSet):
-    queryset = StorageLocation.objects.select_related('location', 'type')
-    serializer_class = StorageLocationSerializer
-
-
-class StorageShedViewSet(LocationScopedMixin, viewsets.ModelViewSet):
+class StorageShedViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.ModelViewSet):
+    """GET /api/storage-shed/?storage_location=<id> lists only that storage location's sheds."""
     queryset = StorageShed.objects.select_related('sto_loc__location', 'shed')
     serializer_class = StorageShedSerializer
 
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        location_id = storage_location_param(self.request)
+        if location_id is not None:
+            queryset = queryset.filter(sto_loc_id=location_id)
+        return queryset
 
-class StockViewSet(LocationScopedMixin, viewsets.ModelViewSet):
+
+class StockViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.ModelViewSet):
     queryset = Stock.objects.select_related(
         'item', 'status', 'location__shed', 'location__sto_loc__location'
     )
     serializer_class = StockSerializer
 
 
-class StockTransactionViewSet(LocationScopedMixin, viewsets.ModelViewSet):
-    """Sending and receiving locations both see a transfer; only the sender creates or changes it."""
+class StockTransactionViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.ModelViewSet):
+    """Sending and receiving storage locations both see a transfer; only the sender creates or changes it."""
     queryset = StockTransaction.objects.all()
     serializer_class = StockTransactionSerializer
 
@@ -189,7 +249,7 @@ class StockTransactionViewSet(LocationScopedMixin, viewsets.ModelViewSet):
 
 class TotalInventoryViewSet(viewsets.ViewSet):
     """
-    Read-only total stock per item (only the user's own location unless master).
+    Read-only total stock per item (only the user's own storage location unless master).
     GET /api/total-inventory/
     """
     def list(self, request):

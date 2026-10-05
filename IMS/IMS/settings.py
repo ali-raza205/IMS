@@ -20,6 +20,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
+# Each machine overrides these in IMS/local_settings.py (not in git); see local_settings.example.py.
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.environ.get(
@@ -76,7 +77,7 @@ REST_FRAMEWORK = {
 }
 
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(hours=1),
+    'ACCESS_TOKEN_LIFETIME': timedelta(hours=2),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
 }
 
@@ -111,14 +112,15 @@ WSGI_APPLICATION = 'IMS.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
+# The real login is set in local_settings.py.
 DATABASES = {
-     'default': {
+    'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'PDMA_IMS_DB',
-        'USER': 'postgres',
-        'PASSWORD': 'postgres',
-        'HOST': '192.168.0.44',
-        'PORT': '5432',
+        'NAME': os.environ.get('DB_NAME', 'PDMA_IMS_DB'),
+        'USER': os.environ.get('DB_USER', 'postgres'),
+        'PASSWORD': os.environ.get('DB_PASSWORD', ''),
+        'HOST': os.environ.get('DB_HOST', 'localhost'),
+        'PORT': os.environ.get('DB_PORT', '5432'),
     }
 }
 
@@ -169,3 +171,25 @@ STORAGES = {
         'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
     },
 }
+
+# Submits (add/edit/delete) are printed to the server console before saving; see db/api_views.py LogSubmitMixin.
+# Set the 'db.submit' level to 'WARNING' to print only rejected submits.
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'submit': {'format': '[{asctime}] {message}', 'style': '{', 'datefmt': '%Y-%m-%d %H:%M:%S'},
+    },
+    'handlers': {
+        'submit_console': {'class': 'logging.StreamHandler', 'formatter': 'submit'},
+    },
+    'loggers': {
+        'db.submit': {'handlers': ['submit_console'], 'level': 'INFO', 'propagate': False},
+    },
+}
+
+# Machine-specific settings (database login, secret key, allowed hosts, port) are kept out of git.
+try:
+    from .local_settings import *  # noqa: F401,F403
+except ImportError:
+    pass

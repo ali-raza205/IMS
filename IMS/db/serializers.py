@@ -20,8 +20,9 @@ from .models import (
     StockTransaction,
     Suppliers,
     Units,
+    UserProfile,
 )
-from .permissions import LocationScopedFieldsMixin, is_master
+from .permissions import LocationScopedFieldsMixin, is_master, sees_all_locations, user_location_id
 
 
 def name_field(source):
@@ -32,21 +33,24 @@ def name_field(source):
 # --- Auth ------------------------------------------------------------------
 
 def user_info(user):
-    """Who is logged in and which location they are limited to (none for master users)."""
+    """Who is logged in, their role and which storage location they are limited to (none for master and all areas users)."""
     profile = getattr(user, 'profile', None)
-    location = profile.location if profile else None
+    storage_location = profile.storage_location if profile else None
+    location = storage_location.location if storage_location else None
     return {
         'id': user.id,
         'username': user.username,
         'full_name': user.get_full_name(),
-        'role': 'master' if is_master(user) else 'location',
+        'role': UserProfile.ROLE_MASTER if is_master(user) else (profile.role if profile else UserProfile.ROLE_LOCATION),
+        'storage_location_id': storage_location.st_loc_id if storage_location else None,
+        'storage_location_name': storage_location.details if storage_location else None,
         'location_id': location.location_id if location else None,
         'location_name': location.location_name if location else None,
     }
 
 
 class LoginSerializer(TokenObtainPairSerializer):
-    """Returns the access/refresh tokens plus the user's role and location."""
+    """Returns the access/refresh tokens plus the user's role and storage location."""
 
     def validate(self, attrs):
         data = super().validate(attrs)
@@ -114,7 +118,7 @@ class ItemsSerializer(serializers.ModelSerializer):
 
 # --- Storage ---------------------------------------------------------------
 
-class StorageLocationSerializer(LocationScopedFieldsMixin, serializers.ModelSerializer):
+class StorageLocationSerializer(serializers.ModelSerializer):
     location_name = name_field('location.location_name')
     type_name = name_field('type.type_name')
 
@@ -124,6 +128,7 @@ class StorageLocationSerializer(LocationScopedFieldsMixin, serializers.ModelSeri
 
 
 class StorageShedSerializer(LocationScopedFieldsMixin, serializers.ModelSerializer):
+    storage_location_name = name_field('sto_loc.details')
     location_name = name_field('sto_loc.location.location_name')
     shed_name = name_field('shed.shed_name')
 
@@ -134,6 +139,7 @@ class StorageShedSerializer(LocationScopedFieldsMixin, serializers.ModelSerializ
 
 class StockSerializer(LocationScopedFieldsMixin, serializers.ModelSerializer):
     item_name = name_field('item.item_name')
+    storage_location_name = name_field('location.sto_loc.details')
     location_name = name_field('location.sto_loc.location.location_name')
     shed_name = name_field('location.shed.shed_name')
     status_name = name_field('status.status_name')
@@ -213,10 +219,65 @@ class JSONDetailsMixin(serializers.Serializer):
         return super().update(instance, validated_data)
 
 
+class OwnStorageLocationMixin:
+    """
+    New records without `storage_location` get the user's own storage location.
+    Master and all areas users have to choose one.
+    """
+
+    def get_fields(self):
+        fields = super().get_fields()
+        fields['storage_location'].required = False
+        return fields
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if self.instance is None and attrs.get('storage_location') is None:
+            request = self.context.get('request')
+            user = request.user if request is not None else None
+            profile = getattr(user, 'profile', None)
+            if user is None or sees_all_locations(user) or profile is None or profile.storage_location is None:
+                raise serializers.ValidationError({'storage_location': 'This field is required.'})
+            attrs['storage_location'] = profile.storage_location
+        return attrs
+
+
+class ShedNumberMixin:
+    """
+    `sto_shed` also accepts a shed number (Shed id, e.g. 1 for "Shed-1"): it becomes the storage shed with
+    that shed at the record's storage location. Ids of that storage location's storage sheds are kept as is.
+    The record's storage location comes from `storage_location_id_from`, else the user's own.
+    """
+
+    def storage_location_id_from(self, data):
+        if data.get('storage_location') not in (None, ''):
+            return data['storage_location']
+        return self.instance.storage_location_id if self.instance is not None else None
+
+    def to_internal_value(self, data):
+        value = data.get('sto_shed') if hasattr(data, 'get') else None
+        if value not in (None, ''):
+            request = self.context.get('request')
+            location_id = self.storage_location_id_from(data)
+            if location_id is None and request is not None:
+                location_id = user_location_id(request.user)
+            sheds = StorageShed.objects.filter(sto_loc_id=location_id)
+            try:
+                if location_id is not None and not sheds.filter(pk=value).exists():
+                    match = sheds.filter(shed_id=value).values_list('pk', flat=True).first()
+                    if match is not None:
+                        data = data.copy()
+                        data['sto_shed'] = match
+            except (TypeError, ValueError):
+                pass  # not a number; the field reports it
+        return super().to_internal_value(data)
+
+
 # --- Purchase order --------------------------------------------------------
 
-class PurchaseOrderSerializer(LocationScopedFieldsMixin, JSONDetailsMixin, serializers.ModelSerializer):
-    location_name = name_field('location.location_name')
+class PurchaseOrderSerializer(OwnStorageLocationMixin, ShedNumberMixin, LocationScopedFieldsMixin, JSONDetailsMixin, serializers.ModelSerializer):
+    storage_location_name = name_field('storage_location.details')
+    location_name = name_field('storage_location.location.location_name')
     supplier_name = name_field('supplier.supplier_name')
     item_name = name_field('item.item_name')
     detail_fields = ('quantity', 'unit_price')
@@ -234,12 +295,21 @@ class PurchaseOrderSerializer(LocationScopedFieldsMixin, JSONDetailsMixin, seria
 
 # --- Goods receipt ---------------------------------------------------------
 
-class GoodsReceiptSerializer(LocationScopedFieldsMixin, JSONDetailsMixin, serializers.ModelSerializer):
+class GoodsReceiptSerializer(ShedNumberMixin, LocationScopedFieldsMixin, JSONDetailsMixin, serializers.ModelSerializer):
     po_id = serializers.PrimaryKeyRelatedField(queryset=PurchaseOrder.objects.all(), source='po')
     po_number = name_field('po.po_number')
     supplier_name = name_field('po.supplier.supplier_name')
     item_name = name_field('item.item_name')
     detail_fields = ('received_quantity', 'unit_cost', 'batch_no', 'manufacturing_date', 'expiry_date')
+
+    def storage_location_id_from(self, data):
+        """A goods receipt is stored at its purchase order's storage location."""
+        if data.get('po_id') not in (None, ''):
+            try:
+                return PurchaseOrder.objects.filter(pk=data['po_id']).values_list('storage_location_id', flat=True).first()
+            except (TypeError, ValueError):
+                return None
+        return self.instance.po.storage_location_id if self.instance is not None else None
 
     class Meta:
         model = GoodsReceipt
@@ -253,9 +323,10 @@ class GoodsReceiptSerializer(LocationScopedFieldsMixin, JSONDetailsMixin, serial
 
 # --- Donation --------------------------------------------------------------
 
-class DonationSerializer(LocationScopedFieldsMixin, JSONDetailsMixin, serializers.ModelSerializer):
+class DonationSerializer(OwnStorageLocationMixin, ShedNumberMixin, LocationScopedFieldsMixin, JSONDetailsMixin, serializers.ModelSerializer):
     donor_name = name_field('donor.donor_name')
-    warehouse_name = name_field('warehouse.location_name')
+    storage_location_name = name_field('storage_location.details')
+    location_name = name_field('storage_location.location.location_name')
     item_name = name_field('item.item_name')
     detail_fields = ('quantity', 'estimated_unit_value', 'batch_no', 'manufacturing_date', 'expiry_date')
 
