@@ -32,7 +32,9 @@ Check `IMS\update.log` on the server to see what happened.
    git clone https://github.com/ali-raza205/IMS.git Inventory_Management_git
    ```
 3. Create `Inventory_Management_git\IMS\IMS\local_settings.py` from `local_settings.example.py`:
-   database login, a new `SECRET_KEY`, `ALLOWED_HOSTS = ['192.168.0.64', 'localhost']`, `WAITRESS_PORT = 8009`.
+   database login, a new `SECRET_KEY`, `ALLOWED_HOSTS = ['192.168.0.64', 'localhost']`,
+   `WAITRESS_HOST = '192.168.0.64'`, `WAITRESS_PORT = 8009`, `WAITRESS_THREADS = 4`
+   (the values the old `start_server.bat` set as environment variables).
 4. Install dependencies: run `IMS\install.bat` (creates `IMS\venv`).
    Without it the scripts use the Python on PATH.
 5. Stop the old server, then swap folders so the paths stay the same:

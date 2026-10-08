@@ -20,5 +20,7 @@ DATABASES = {
     }
 }
 
-# Port serve.py listens on.
+# Address, port and worker threads serve.py uses.
+WAITRESS_HOST = '192.168.0.64'
 WAITRESS_PORT = 8009
+WAITRESS_THREADS = 4
