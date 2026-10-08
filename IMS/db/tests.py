@@ -1,3 +1,4 @@
+import datetime
 import json
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -5,7 +6,9 @@ from unittest.mock import patch
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.test import SimpleTestCase
+from rest_framework.exceptions import ValidationError as APIValidationError
 
+from .dashboard import dashboard_filters, filtered_records
 from .models import Locations, PurchaseOrder, Stock, StorageLocation, UserProfile
 from .permissions import IsMasterOrCreateOnly, IsMasterOrReadOnly, limit_to_location
 from .serializers import DonationSerializer, GoodsReceiptSerializer, PurchaseOrderSerializer, user_info
@@ -153,3 +156,35 @@ class GoodsReceiptSerializerTests(SimpleTestCase):
         create_kwargs = create_mock.call_args.kwargs
         self.assertNotIn('item_id', create_kwargs)
         self.assertEqual(json.loads(create_kwargs['details']), [1, 2])
+
+
+class DashboardFilterTests(SimpleTestCase):
+    today = datetime.date(2026, 10, 6)
+
+    def sql(self, user, **params):
+        records = filtered_records(user, dashboard_filters(params), self.today)
+        return {source: str(queryset.query) for source, queryset in records.items()}
+
+    def test_reads_purchase_orders_and_donations_of_the_users_storage_location(self):
+        sql = self.sql(location_user(), storage_location='9')
+        self.assertEqual(set(sql), {'purchase_order', 'donation'})
+        self.assertIn('"purchase_order"."location_id" = 3', sql['purchase_order'])
+        self.assertIn('"purchase_order"."location_id" IN (9)', sql['purchase_order'])
+        self.assertIn('"donation"."warehouse_id" = 3', sql['donation'])
+
+    def test_source_item_and_category_filters(self):
+        sql = self.sql(location_user(), source='donation', category='2,5', item='7')
+        self.assertEqual(set(sql), {'donation'})
+        self.assertIn('"items"."item_category" IN (2, 5)', sql['donation'])
+        self.assertIn('"donation"."item_id" IN (7)', sql['donation'])
+
+    def test_expiry_filters_use_the_records_expiry_date(self):
+        sql = self.sql(location_user(), expiry_status='expired,expiring', expiring_days='60', expiry_to='2027-01-31')
+        self.assertIn('"purchase_order"."expiry_date" <= 2026-12-05', sql['purchase_order'])  # today + 60 days
+        self.assertIn('"purchase_order"."expiry_date" <= 2027-01-31', sql['purchase_order'])
+
+    def test_invalid_filters_are_rejected(self):
+        for params in ({'category': 'food'}, {'expiry_status': 'soon'}, {'source': 'stock'},
+                       {'expiring_days': '-1'}, {'expiry_from': '06/10/2026'}):
+            with self.subTest(params=params), self.assertRaises(APIValidationError):
+                dashboard_filters(params)

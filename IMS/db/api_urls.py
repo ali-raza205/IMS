@@ -23,6 +23,7 @@ from .api_views import (
     TotalInventoryViewSet,
     UnitsViewSet,
 )
+from .dashboard import DashboardView
 
 
 router = DefaultRouter()
@@ -49,6 +50,7 @@ urlpatterns = [
     path('auth/login/', LoginView.as_view(), name='auth-login'),
     path('auth/refresh/', TokenRefreshView.as_view(), name='auth-refresh'),
     path('auth/me/', MeView.as_view(), name='auth-me'),
+    path('dashboard/', DashboardView.as_view(), name='dashboard'),
     path('', include(router.urls)),
 ]
 
