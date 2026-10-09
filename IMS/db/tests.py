@@ -1,7 +1,5 @@
 import datetime
-import json
 from types import SimpleNamespace
-from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
@@ -9,9 +7,9 @@ from django.test import SimpleTestCase
 from rest_framework.exceptions import ValidationError as APIValidationError
 
 from .dashboard import dashboard_filters, filtered_records
-from .models import Locations, PurchaseOrder, Stock, StorageLocation, UserProfile
+from .models import InventoryTransaction, Locations, StockBalance, StorageLocation, TransactionType, UserProfile
 from .permissions import IsMasterOrCreateOnly, IsMasterOrReadOnly, limit_to_location
-from .serializers import DonationSerializer, GoodsReceiptSerializer, PurchaseOrderSerializer, user_info
+from .serializers import InventoryTransactionSerializer, sides_used, stock_keys, user_info
 
 
 def location_user(st_loc_id=3):
@@ -33,15 +31,16 @@ class StorageLocationScopeTests(SimpleTestCase):
 
     def test_location_user_is_limited_to_their_storage_location(self):
         user = location_user()
-        po_sql = str(limit_to_location(PurchaseOrder.objects.all(), user).query)
-        self.assertIn('"purchase_order"."location_id" = 3', po_sql)
-        stock_sql = str(limit_to_location(Stock.objects.all(), user).query)
-        self.assertIn('"storage_shed"."sto_loc_id" = 3', stock_sql)
+        txn_sql = str(limit_to_location(InventoryTransaction.objects.all(), user).query)
+        self.assertIn('"inventory_transaction"."from_storage_location_id" = 3', txn_sql)
+        self.assertIn('OR "inventory_transaction"."to_storage_location_id" = 3', txn_sql)
+        stock_sql = str(limit_to_location(StockBalance.objects.all(), user).query)
+        self.assertIn('"stock_balance"."storage_location_id" = 3', stock_sql)
 
     def test_all_areas_user_sees_every_storage_location_but_is_not_master(self):
         user = User(id=6, username='province')
         UserProfile(user=user, role=UserProfile.ROLE_ALL_AREAS)
-        self.assertNotIn('WHERE', str(limit_to_location(PurchaseOrder.objects.all(), user).query))
+        self.assertNotIn('WHERE', str(limit_to_location(InventoryTransaction.objects.all(), user).query))
         self.assertEqual(user_info(user)['role'], 'all_areas')
 
         def allowed(permission, method):
@@ -60,131 +59,58 @@ class StorageLocationScopeTests(SimpleTestCase):
         UserProfile(role=UserProfile.ROLE_LOCATION, storage_location_id=3).clean()
 
 
-class PurchaseOrderSerializerTests(SimpleTestCase):
-    def test_create_stores_detail_payload_on_purchase_order_record(self):
-        serializer = PurchaseOrderSerializer()
-        details_payload = [
-            {
-                'item_id': 7,
-                'quantity': '10.50',
-                'unit_price': '25.00',
-                'remarks': 'bulk order',
-            }
-        ]
+class InventoryTransactionTests(SimpleTestCase):
+    def test_direction_decides_which_storage_location_sides_are_filled(self):
+        self.assertEqual(sides_used(TransactionType.IN), ('to',))
+        self.assertEqual(sides_used(TransactionType.OUT), ('from',))
+        self.assertEqual(sides_used(TransactionType.TRANSFER), ('from', 'to'))
 
-        with patch('db.serializers.PurchaseOrder.objects.create', return_value=object()) as create_mock:
-            serializer.create({
-                'po_number': 'PO-1001',
-                'details': details_payload,
-            })
+    def test_stock_keys_cover_both_sides_of_a_transfer(self):
+        txn = InventoryTransaction(
+            item_id=1, sub_cat_id=2, spec_id=3, status_id=1, quantity=5,
+            from_storage_location_id=3, from_sto_shed_id=9, to_storage_location_id=1,
+        )
+        self.assertEqual(stock_keys(txn), {(3, 9, 1, 2, 3, 1), (1, None, 1, 2, 3, 1)})
 
-        create_kwargs = create_mock.call_args.kwargs
-        self.assertEqual(create_kwargs['po_number'], 'PO-1001')
-        self.assertEqual(create_kwargs['item_id'], 7)
-        self.assertEqual(create_kwargs['quantity'], '10.50')
-        self.assertEqual(create_kwargs['unit_price'], '25.00')
-        self.assertEqual(json.loads(create_kwargs['details']), details_payload)
-
-    def test_received_date_is_optional_date_field(self):
-        field = PurchaseOrderSerializer().fields['received_date']
-        self.assertFalse(field.required)
-        self.assertTrue(field.allow_null)
-        self.assertEqual(str(field.to_internal_value('2026-10-05')), '2026-10-05')
-
-
-class DonationSerializerTests(SimpleTestCase):
-    def test_create_stores_detail_payload_on_donation_record(self):
-        serializer = DonationSerializer()
-        details_payload = [
-            {
-                'item_id': 3,
-                'quantity': '40.00',
-                'estimated_unit_value': '12.00',
-                'batch_no': 'B-9',
-                'expiry_date': '2027-01-31',
-            },
-            {'item_id': 4, 'quantity': '5.00'},
-        ]
-
-        with patch('db.serializers.Donation.objects.create', return_value=object()) as create_mock:
-            serializer.create({
-                'donation_no': 'DN-1',
-                'details': details_payload,
-            })
-
-        create_kwargs = create_mock.call_args.kwargs
-        self.assertEqual(create_kwargs['donation_no'], 'DN-1')
-        self.assertEqual(create_kwargs['item_id'], 3)
-        self.assertEqual(create_kwargs['quantity'], '40.00')
-        self.assertEqual(create_kwargs['estimated_unit_value'], '12.00')
-        self.assertEqual(create_kwargs['batch_no'], 'B-9')
-        self.assertEqual(create_kwargs['expiry_date'], '2027-01-31')
-        self.assertEqual(json.loads(create_kwargs['details']), details_payload)
-
-    def test_received_date_is_optional_date_field(self):
-        field = DonationSerializer().fields['received_date']
-        self.assertFalse(field.required)
-        self.assertTrue(field.allow_null)
-        self.assertEqual(str(field.to_internal_value('2026-10-05')), '2026-10-05')
-
-
-class GoodsReceiptSerializerTests(SimpleTestCase):
-    def test_create_stores_detail_payload_on_goods_receipt_record(self):
-        serializer = GoodsReceiptSerializer()
-        details_payload = [
-            {'item_id': 9, 'received_quantity': '8.00', 'unit_cost': '3.50'},
-        ]
-
-        with patch('db.serializers.GoodsReceipt.objects.create', return_value=object()) as create_mock:
-            serializer.create({
-                'grn_no': 'GRN-1',
-                'details': details_payload,
-            })
-
-        create_kwargs = create_mock.call_args.kwargs
-        self.assertEqual(create_kwargs['item_id'], 9)
-        self.assertEqual(create_kwargs['received_quantity'], '8.00')
-        self.assertEqual(create_kwargs['unit_cost'], '3.50')
-        self.assertEqual(json.loads(create_kwargs['details']), details_payload)
-
-    def test_create_ignores_non_object_detail_lines(self):
-        serializer = GoodsReceiptSerializer()
-
-        with patch('db.serializers.GoodsReceipt.objects.create', return_value=object()) as create_mock:
-            serializer.create({'grn_no': 'GRN-2', 'details': [1, 2]})
-
-        create_kwargs = create_mock.call_args.kwargs
-        self.assertNotIn('item_id', create_kwargs)
-        self.assertEqual(json.loads(create_kwargs['details']), [1, 2])
+    def test_receiving_side_is_not_limited_to_the_users_storage_location(self):
+        request = SimpleNamespace(user=location_user())
+        fields = InventoryTransactionSerializer(context={'request': request}).fields
+        self.assertIn('"storage_location"."st_loc_id" = 3', str(fields['from_storage_location'].queryset.query))
+        self.assertNotIn('WHERE', str(fields['to_storage_location'].queryset.all().query))
+        self.assertFalse(fields['status'].required)
 
 
 class DashboardFilterTests(SimpleTestCase):
     today = datetime.date(2026, 10, 6)
 
     def sql(self, user, **params):
-        records = filtered_records(user, dashboard_filters(params), self.today)
-        return {source: str(queryset.query) for source, queryset in records.items()}
+        return str(filtered_records(user, dashboard_filters(params), self.today).query)
 
-    def test_reads_purchase_orders_and_donations_of_the_users_storage_location(self):
+    def test_reads_transactions_of_the_users_storage_location(self):
         sql = self.sql(location_user(), storage_location='9')
-        self.assertEqual(set(sql), {'purchase_order', 'donation'})
-        self.assertIn('"purchase_order"."location_id" = 3', sql['purchase_order'])
-        self.assertIn('"purchase_order"."location_id" IN (9)', sql['purchase_order'])
-        self.assertIn('"donation"."warehouse_id" = 3', sql['donation'])
+        self.assertIn('"inventory_transaction"."from_storage_location_id" = 3', sql)
+        self.assertIn('"inventory_transaction"."to_storage_location_id" = 3', sql)
+        self.assertIn('COALESCE("inventory_transaction"."to_storage_location_id", '
+                      '"inventory_transaction"."from_storage_location_id") IN (9)', sql)
 
-    def test_source_item_and_category_filters(self):
-        sql = self.sql(location_user(), source='donation', category='2,5', item='7')
-        self.assertEqual(set(sql), {'donation'})
-        self.assertIn('"items"."item_category" IN (2, 5)', sql['donation'])
-        self.assertIn('"donation"."item_id" IN (7)', sql['donation'])
+    def test_type_item_and_category_filters(self):
+        sql = self.sql(location_user(), txn_type='1,2', direction='in', category='2,5', item='7', sub_category='4',
+                       spec='8', status='2')
+        self.assertIn('"inventory_transaction"."txn_type_id" IN (1, 2)', sql)
+        self.assertIn('"transaction_type"."direction" IN (in)', sql)
+        self.assertIn('"items"."item_category" IN (2, 5)', sql)
+        self.assertIn('"inventory_transaction"."item_id" IN (7)', sql)
+        self.assertIn('"inventory_transaction"."sub_cat_id" IN (4)', sql)
+        self.assertIn('"inventory_transaction"."spec_id" IN (8)', sql)
+        self.assertIn('"inventory_transaction"."status_id" IN (2)', sql)
 
     def test_expiry_filters_use_the_records_expiry_date(self):
         sql = self.sql(location_user(), expiry_status='expired,expiring', expiring_days='60', expiry_to='2027-01-31')
-        self.assertIn('"purchase_order"."expiry_date" <= 2026-12-05', sql['purchase_order'])  # today + 60 days
-        self.assertIn('"purchase_order"."expiry_date" <= 2027-01-31', sql['purchase_order'])
+        self.assertIn('"inventory_transaction"."expiry_date" <= 2026-12-05', sql)  # today + 60 days
+        self.assertIn('"inventory_transaction"."expiry_date" <= 2027-01-31', sql)
 
     def test_invalid_filters_are_rejected(self):
-        for params in ({'category': 'food'}, {'expiry_status': 'soon'}, {'source': 'stock'},
-                       {'expiring_days': '-1'}, {'expiry_from': '06/10/2026'}):
+        for params in ({'category': 'food'}, {'expiry_status': 'soon'}, {'direction': 'sideways'},
+                       {'txn_type': 'donation'}, {'expiring_days': '-1'}, {'expiry_from': '06/10/2026'}):
             with self.subTest(params=params), self.assertRaises(APIValidationError):
                 dashboard_filters(params)

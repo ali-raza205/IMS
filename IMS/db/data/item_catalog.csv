@@ -1,0 +1,222 @@
+old_item_id,old_item_name,category,item_name,sub_category,spec,unit
+43,Boat,FFE,Boat,,,Nos
+63,Boat carrying trolley,FFE,Boat Trolley,,,Nos
+2,Fibre Glass Boat 19ft,FFE,Boat,Fiberglass,19 ft,Nos
+3,Fibre Glass Boat 24ft,FFE,Boat,Fiberglass,24 ft,Nos
+1,Inflatable Boats,FFE,Boat,Inflatable,,Nos
+74,Inflatable boats,FFE,Boat,Inflatable,,Nos
+4,Rubber Boat/Water Boat with Boat Gatter,FFE,Boat,Rubber,,Nos
+7,Dewatering Pump 1 Cusec,FFE,Dewatering Pump,Engine Driven,1 Cusec,Nos
+8,Dewatering Pump 2 Cusec,FFE,Dewatering Pump,Engine Driven,2 Cusec,Nos
+9,Dewatering Pump 4 Cusec,FFE,Dewatering Pump,Engine Driven,4 Cusec,Nos
+10,Dewatering Pump 7HP,FFE,Dewatering Pump,Engine Driven,7 HP,Nos
+73,Dewatering pump set 1-cusec,FFE,Dewatering Pump,Engine Driven,1 Cusec,Nos
+65,Dewatering Set,FFE,Dewatering Pump,Engine Driven,,Nos
+173,D-Watering Sets  (1-Cusec),FFE,Dewatering Pump,Engine Driven,1 Cusec,Nos
+180,D-Watering Sets  (1-Cusec),FFE,Dewatering Pump,Engine Driven,1 Cusec,Nos
+179,D-Watering Sets  (4-Cusec),FFE,Dewatering Pump,Engine Driven,4 Cusec,Nos
+11,Electric Dewatering Pump,FFE,Dewatering Pump,Electric,,Nos
+175,Emergency Light,FFE,Emergency Light,,,Nos
+53,Generator,FFE,Generator,,,Nos
+66,Generator with Light Stand,FFE,Generator,With Light Stand,,Nos
+67,Life Bouy,FFE,Life Buoy,,,Nos
+14,Life Ring,FFE,Life Ring,,,Nos
+13,Life Jacket Adult,FFE,Life Jacket,Adult,,Nos
+12,Life Jacket Minor,FFE,Life Jacket,Minor,,Nos
+72,Life Jackets,FFE,Life Jacket,,,Nos
+68,Life Line,FFE,Life Line,,,Nos
+75,Light Stand,FFE,Light Stand,,,Nos
+76,Light stand,FFE,Light Stand,,,Nos
+77,Light stand,FFE,Light Stand,,,Nos
+78,Light stand,FFE,Light Stand,,,Nos
+79,Light stand,FFE,Light Stand,,,Nos
+15,Lights Stand,FFE,Light Stand,,,Nos
+69,Oar Pairs,FFE,Oar Pair,,,Nos
+137,OBM 15HP,FFE,OBM Engine,,15 HP,Nos
+138,OBM 25HP,FFE,OBM Engine,,25 HP,Nos
+5,OBM Engine 40HP,FFE,OBM Engine,,40 HP,Nos
+6,OBM Engine 60HP,FFE,OBM Engine,,60 HP,Nos
+143,OBM Fuel Lead,FFE,OBM Fuel Lead,,,Nos
+86,Rescue Emergency Torch,FFE,Rescue Torch,,,Nos
+81,Sandbag,FFE,Sand Bag,,,Nos
+16,Sand Bag,FFE,Sand Bag,,,Nos
+62,Scuba Set,FFE,Scuba Set,,,Nos
+87,Search Light 100 Watt,FFE,Search Light,,100 W,Nos
+88,Search Light 75 watt,FFE,Search Light,,75 W,Nos
+64,Search lights,FFE,Search Light,,,Nos
+139,SMD Panel Light,FFE,SMD Panel Light,,,Nos
+140,SMD Panel Light,FFE,SMD Panel Light,,,Nos
+70,Bisket,FI,Biscuits,,,Nos
+121,corn oil 3L,FI,Cooking Oil,Corn Oil,3 L,Nos
+122,corn oil 3L,FI,Cooking Oil,Corn Oil,3 L,Nos
+45,Daal,FI,Daal (Pulses),,,Kg
+89,Dates,FI,Dates,,,Kg
+95,Food Hamper,FI,Food Hamper,,,Nos
+124,Glucose D 400g,FI,Glucose,Glucose D,400 g,Nos
+47,Juice,FI,Juice,,,Nos
+123,Knorr Noodles 110g,FI,Noodles,Knorr,110 g,Nos
+48,Milk,FI,Milk,,,Nos
+44,Rashan bag,FI,Ration Bag,,,Nos
+46,Rice,FI,Rice,,,Kg
+90,Pure Drinking Water Bottles 1.5 Ltrs,FI,Drinking Water,Bottle,1.5 L,Nos
+91,Pure Drinking Water Bottles 1.5 Ltrs,FI,Drinking Water,Bottle,1.5 L,Nos
+92,Pure Drinking Water Bottles 1.5 Ltrs,FI,Drinking Water,Bottle,1.5 L,Nos
+93,Pure Drinking Water Bottles 1.5 Ltrs,FI,Drinking Water,Bottle,1.5 L,Nos
+94,Water Bottle 250ml,FI,Drinking Water,Bottle,250 ml,Nos
+17,Tent,NFI,Tent,,,Nos
+80,Tent,NFI,Tent,,,Nos
+41,Tent,NFI,Tent,,100x20,Nos
+42,Tent,NFI,Tent,,100x20,Nos
+161,Beth Tent,NFI,Tent,Bath,,Nos
+213,Big Tent,NFI,Tent,Family,,Nos
+18,School Tent,NFI,Tent,School,,Nos
+82,School tent,NFI,Tent,School,,Nos
+208,China School Tent (2-Pcs),NFI,Tent,School,China 2-Pcs,Nos
+211,"China Tent (1-Pcs), 32kg, NDMA",NFI,Tent,Family,China 1-Pcs 32kg,Nos
+203,"Tents Indonesia, NDMA",NFI,Tent,Family,Indonesia,Nos
+24,Winterize Tent,NFI,Tent,Winterized,,Nos
+204,"Winterized Tent (D/Fly), NDMA",NFI,Tent,Winterized,Double Fly,Nos
+207,"China Warm Tent (1-Pcs), NDMA",NFI,Tent,Winterized,China 1-Pcs,Nos
+209,"China Warm Tent (1-Pcs), NDMA",NFI,Tent,Winterized,China 1-Pcs,Nos
+205,"China Warm Tent (3-Pcs), NDMA",NFI,Tent,Winterized,China 3-Pcs,Nos
+206,"China Warm Tent (3-Pcs), NDMA",NFI,Tent,Winterized,China 3-Pcs,Nos
+160,Hospital Tent Old Used,NFI,Tent,Hospital,,Nos
+169,Parachute Tent,NFI,Tent,Parachute,,Nos
+217,Parachute Tent/Tarpal Used,NFI,Tent,Parachute,,Nos
+218,Parachute Tent/Tarpal Used,NFI,Tent,Parachute,,Nos
+165,Russian Tent with Accessories,NFI,Tent,Russian,,Nos
+210,iron peg,NFI,Tent Peg,Iron,,Nos
+163,Iron Pipe for Hospital Tent,NFI,Tent Pole,,,Nos
+164,Iron Pipe for Hospital Tent,NFI,Tent Pole,,,Nos
+212,Pole For Russian Tent,NFI,Tent Pole,,,Nos
+126,AC Cabinet,NFI,AC Cabinet,,,Nos
+150,Basin Stand,NFI,Basin Stand,,,Nos
+106,Bed sheet,NFI,Bed Sheet,,,Nos
+216,Hospital old used sheet,NFI,Bed Sheet,Hospital,,Nos
+132,Bed Side Trolley,NFI,Bed Side Trolley,,,Nos
+142,Headers Footers for Bed,NFI,Bed Header/Footer,,,Nos
+221,Bio Bag,NFI,Bio Bag,,,Nos
+22,Blanket,NFI,Blanket,,,Nos
+39,Blankets Colorful,NFI,Blanket,Colorful,,Nos
+227,Book Manual English,NFI,Book Manual,,English,Nos
+226,Book Manual Urdu,NFI,Book Manual,,Urdu,Nos
+157,Carpet,NFI,Carpet,,,Nos
+228,Carton Packing Empty,NFI,Empty Carton,,,Nos
+229,Carton Packing Empty,NFI,Empty Carton,,,Nos
+230,Carton Packing Empty,NFI,Empty Carton,,,Nos
+231,PP Bag,NFI,PP Bag,,,Nos
+232,PP Bag Printed Empty,NFI,PP Bag,Printed,,Nos
+233,PP Bag Printed Empty,NFI,PP Bag,Printed,,Nos
+105,Chlorine Solution,NFI,Chlorine Solution,,,Nos
+220,Chlorine Solution,NFI,Chlorine Solution,,,Nos
+37,Cloth,NFI,Cloth,,,Bags
+40,Textile Items,NFI,Textile Items,,,Cartons
+36,Water / Detergent / Brushes,NFI,Cleaning Supplies,,,Cartons
+147,Commode,NFI,Commode,,,Nos
+151,Commode Tank,NFI,Commode Tank,,,Nos
+152,Commode Tank,NFI,Commode Tank,,,Nos
+222,Cotton Roll,NFI,Cotton Roll,,,Nos
+141,Cover for mattress,NFI,Mattress Cover,,,Nos
+23,Mattresses,NFI,Mattress,,,Nos
+129,Mattress Foam Bed,NFI,Mattress,Foam,,Nos
+130,Drip Stand,NFI,Drip Stand,,,Nos
+97,Face Mask,NFI,Face Mask,,,Nos
+98,face mask,NFI,Face Mask,,,Nos
+99,Face Mask,NFI,Face Mask,,,Nos
+100,Mask N 95,NFI,Face Mask,N95,,Nos
+104,Face Protective Shield,NFI,Face Shield,,,Nos
+101,PPEs suits,NFI,PPE Suit,,,Nos
+102,Gloves,NFI,Gloves,,,Nos
+103,Goggles,NFI,Goggles,,,Nos
+131,Fan,NFI,Fan,,,Nos
+35,Pedestal Fan,NFI,Fan,Pedestal,,Nos
+96,Female Dignity kit,NFI,Female Dignity Kit,,,Nos
+32,First Aid Kit,NFI,First Aid Kit,,,Nos
+31,Hygiene Kit / Wash Bag,NFI,Hygiene Kit,,,Nos
+33,Kitchen Set,NFI,Kitchen Set,,,Nos
+112,Folding Bed,NFI,Folding Bed,,,Nos
+113,Folding Bed,NFI,Folding Bed,,,Nos
+114,Folding Bed,NFI,Folding Bed,,,Nos
+128,Hospital Bed,NFI,Hospital Bed,,,Nos
+153,Wheelchair,NFI,Wheelchair,,,Nos
+144,Hammers Bag,NFI,Hammers Bag,,,Nos
+166,Hammers Bag,NFI,Hammers Bag,,,Nos
+167,Hammers Bag,NFI,Hammers Bag,,,Nos
+168,Hammers Bag,NFI,Hammers Bag,,,Nos
+136,Harners,NFI,Harness,,,Nos
+38,Jerry Can 20L,NFI,Jerry Can,,20 L,Nos
+158,Plastic Can,NFI,Plastic Can,,,Nos
+115,Kerosene Heater,NFI,Heater,Kerosene,,Nos
+125,Laptop Bag,NFI,Laptop Bag,,,Nos
+120,Lux Soap 50g,NFI,Soap,Lux,50 g,Nos
+117,Lux Soap 98g,NFI,Soap,Lux,98 g,Nos
+118,Lux Soap 100g,NFI,Soap,Lux,100 g,Nos
+119,Lux Soap 100g,NFI,Soap,Lux,100 g,Nos
+116,Lux Soap 128g,NFI,Soap,Lux,128 g,Nos
+225,Methanol,NFI,Methanol,,,Nos
+234,"Miscellaneous Items (Clothes,Shoes)",NFI,Miscellaneous Items,,,Nos
+110,Shoes (Kids),NFI,Shoes,Kids,,Nos
+19,Mosquito Net,NFI,Mosquito Net,,,Nos
+83,Mosquito net,NFI,Mosquito Net,,,Nos
+159,Muslim Shower,NFI,Muslim Shower,,,Nos
+148,P Trap,NFI,P Trap,,,Nos
+149,P Trap,NFI,P Trap,,,Nos
+162,PPR Pipe,NFI,PPR Pipe,,,Nos
+214,Pat Box,NFI,Pat Box,,,Nos
+215,Pat Box,NFI,Pat Box,,,Nos
+170,Pillow,NFI,Pillow,,,Nos
+111,Pillow (Used),NFI,Pillow,,,Nos
+219,Pillow Used,NFI,Pillow,,,Nos
+20,Plastic Mat,NFI,Plastic Mat,,,Nos
+84,Plastic mat,NFI,Plastic Mat,,,Nos
+21,Quilt,NFI,Quilt,,,Nos
+85,Quilt,NFI,Quilt,,,Nos
+223,Safety Box,NFI,Safety Box,,,Nos
+154,Sleeping Bag,NFI,Sleeping Bag,,,Nos
+34,Tarpaulin,NFI,Tarpaulin,,,Nos
+145,Tarpal,NFI,Tarpaulin,,,Nos
+146,Tarpal,NFI,Tarpaulin,,,Nos
+155,Umbrella,NFI,Umbrella,,,Nos
+156,Umbrella,NFI,Umbrella,,,Nos
+107,Water Filtration Plant,NFI,Water Filtration Plant,,,Nos
+108,Water Filtration Plant,NFI,Water Filtration Plant,,,Nos
+109,Water Filtration Plant,NFI,Water Filtration Plant,,,Nos
+127,Water Tank,NFI,Water Tank,,,Nos
+224,Chemical Spray Machine,M,Spray Machine,Chemical,,Nos
+183,Airblast Sprayer Machine,M,Spray Machine,Airblast (Tractor Mounted),,Nos
+29,Airblast Sprayer Machine (Tractor Mounted Spray Machine),M,Spray Machine,Airblast (Tractor Mounted),,Nos
+30,Charpai,Frn,Charpai,,,Nos
+52,Computer Table,Frn,Computer Table,,,Nos
+51,Desktop Computer,HW,Computer,Desktop,,Nos
+188,Laptop,HW,Computer,Laptop,,Nos
+187,CISCO Router,HW,Router,Cisco,,Nos
+189,CISCO ISR,HW,Router,Cisco,ISR,Nos
+201,Router,HW,Router,,,Nos
+191,Ubiquity Switch,HW,Network Switch,Ubiquiti,,Nos
+184,XS Modem,HW,Modem,XS,,Nos
+185,XS Modem,HW,Modem,XS,,Nos
+186,IP Phone,HW,IP Phone,,,Nos
+134,Radio Set,HW,Radio Set,,,Nos
+133,Radio Set,HW,Radio Set,,,Nos
+135,Tracker,HW,Tracker,,,Nos
+171,Satellite Connectivity,HW,Satellite Connectivity Equipment,,,Nos
+192,Satellite Connectivity,HW,Satellite Connectivity Equipment,,,Nos
+193,Dish Reflector Mount Brackets,HW,Dish Reflector Mount Bracket,,,Nos
+194,Feed Support System,HW,Feed Support System,,,Nos
+195,Feed Support System,HW,Feed Support System,,,Nos
+198,LNB,HW,LNB,,,Nos
+202,Buc,HW,BUC,,,Nos
+199,Astle Cable,HW,Astle Cable,,,Nos
+200,Connector,HW,Connector,,,Nos
+196,Power Card,HW,Power Card,,,Nos
+197,Power Card,HW,Power Card,,,Nos
+190,Night Vision Camera,HW,Night Vision Camera,,,Nos
+26,Chain Saw,HW,Chain Saw,,,Nos
+25,Folding Shovels,HW,Shovel,Folding,,Nos
+49,Car,Vc,Car,,,Nos
+50,Mini Truck,Vc,Truck,Mini,,Nos
+27,HINO Truck with Water Bowser,Vc,Water Bowser,Truck,HINO,Nos
+181,Truck with water Bowser (12000Ltr),Vc,Water Bowser,Truck,12000 L,Nos
+182,Tractor with Water Bowser (5000Ltr),Vc,Water Bowser,Tractor,5000 L,Nos
+28,"Millat Tractor with Water Bowser, Tractor Mounted Model #: MF 385 (4x4)",Vc,Water Bowser,Tractor,Millat MF-385 4x4,Nos
+71,test,DROP,,,,

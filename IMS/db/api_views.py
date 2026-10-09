@@ -1,9 +1,11 @@
 import json
 import logging
 
+from django.db import transaction
 from django.db.models import Count, F, Q, Sum
 from django.shortcuts import get_object_or_404
 from rest_framework import viewsets
+from rest_framework.decorators import action
 from rest_framework.permissions import SAFE_METHODS, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -11,20 +13,20 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import (
     Categories,
-    Donation,
     Donors,
-    GoodsReceipt,
+    InventoryTransaction,
+    ItemSpec,
     ItemStatus,
+    ItemSubCategory,
     Items,
     Locations,
-    PurchaseOrder,
     Shed,
+    StockBalance,
     StorageLocation,
     StorageShed,
     StorageType,
-    Stock,
-    StockTransaction,
     Suppliers,
+    TransactionType,
     Units,
 )
 from .permissions import (
@@ -37,23 +39,27 @@ from .permissions import (
 )
 from .serializers import (
     CategoriesSerializer,
-    DonationSerializer,
     DonorsSerializer,
-    GoodsReceiptSerializer,
+    InventoryTransactionSerializer,
+    ItemSpecSerializer,
     ItemStatusSerializer,
+    ItemSubCategorySerializer,
     ItemsSerializer,
     LocationsSerializer,
     LoginSerializer,
-    PurchaseOrderSerializer,
     ShedSerializer,
+    StockBalanceSerializer,
     StorageTypeSerializer,
     StorageLocationSerializer,
     StorageShedSerializer,
-    StockSerializer,
-    StockTransactionSerializer,
     SuppliersSerializer,
     TotalInventorySerializer,
+    TransactionTypeSerializer,
     UnitsSerializer,
+    check_stock,
+    item_options,
+    specs_for,
+    stock_keys,
     user_info,
 )
 
@@ -126,9 +132,23 @@ class ItemStatusViewSet(MasterDataViewSet):
     serializer_class = ItemStatusSerializer
 
 
+def id_param(request, name):
+    """The `?<name>=<id>` filter, or None."""
+    value = request.query_params.get(name)
+    return int(value) if value and value.isdigit() else None
+
+
+def storage_location_param(request):
+    """The `?storage_location=<id>` filter, or None."""
+    return id_param(request, 'storage_location')
+
+
 class ItemsViewSet(MasterDataViewSet):
-    """GET /api/items/?item_category=<id> filters by category; POST accepts the same param to set it."""
-    queryset = Items.objects.select_related('item_category')
+    """
+    GET /api/items/?item_category=<id> filters by category; POST accepts the same param to set it.
+    GET /api/items/<id>/options/ returns the item's sub categories with their specs, for the item form dropdowns.
+    """
+    queryset = Items.objects.select_related('item_category', 'unit').order_by('item_name')
     serializer_class = ItemsSerializer
 
     def get_queryset(self):
@@ -145,11 +165,49 @@ class ItemsViewSet(MasterDataViewSet):
         else:
             serializer.save()
 
+    @action(detail=True)
+    def options(self, request, pk=None):
+        return Response(item_options(self.get_object()))
 
-def storage_location_param(request):
-    """The `?storage_location=<id>` filter, or None."""
-    value = request.query_params.get('storage_location')
-    return int(value) if value and value.isdigit() else None
+
+class ItemSubCategoryViewSet(MasterDataViewSet):
+    """GET /api/item-sub-category/?item=<id> lists the sub categories of an item."""
+    queryset = ItemSubCategory.objects.select_related('item').order_by('sub_cat_name')
+    serializer_class = ItemSubCategorySerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        item_id = id_param(self.request, 'item')
+        if item_id is not None:
+            queryset = queryset.filter(item_id=item_id)
+        if self.action == 'list' and self.request.query_params.get('include_inactive') != 'true':
+            queryset = queryset.filter(is_active=True)
+        return queryset
+
+
+class ItemSpecViewSet(MasterDataViewSet):
+    """
+    GET /api/item-spec/?item=<id>&sub_category=<id> lists the specs to choose from for that item and sub category:
+    the sub category's own specs plus those of the whole item. Without `sub_category` only the whole item's specs.
+    """
+    queryset = ItemSpec.objects.select_related('item', 'sub_cat').order_by('spec_name')
+    serializer_class = ItemSpecSerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        item_id = id_param(self.request, 'item')
+        if item_id is not None:
+            queryset = queryset.filter(pk__in=specs_for(item_id, id_param(self.request, 'sub_category')))
+        if self.action == 'list' and self.request.query_params.get('include_inactive') != 'true':
+            queryset = queryset.filter(is_active=True)
+        return queryset
+
+
+class TransactionTypeViewSet(LogSubmitMixin, viewsets.ModelViewSet):
+    """Donation, Procurement, NDMA, Dispatch, Internal Transfer, Opening Stock; only master users change them."""
+    queryset = TransactionType.objects.order_by('type_id')
+    serializer_class = TransactionTypeSerializer
+    permission_classes = [IsAuthenticated, IsMasterOrReadOnly]
 
 
 class ShedViewSet(MasterDataViewSet):
@@ -197,24 +255,6 @@ class StorageLocationViewSet(LogSubmitMixin, viewsets.ModelViewSet):
 
 # --- Storage location data: location users only see and change their own storage location ---
 
-class DonationViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.ModelViewSet):
-    queryset = Donation.objects.select_related('donor', 'storage_location__location', 'item')
-    serializer_class = DonationSerializer
-    created_by_field = 'created_by'
-
-
-class PurchaseOrderViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.ModelViewSet):
-    queryset = PurchaseOrder.objects.select_related('storage_location__location', 'supplier', 'item')
-    serializer_class = PurchaseOrderSerializer
-    created_by_field = 'created_by'
-
-
-class GoodsReceiptViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.ModelViewSet):
-    queryset = GoodsReceipt.objects.select_related('po__supplier', 'item')
-    serializer_class = GoodsReceiptSerializer
-    created_by_field = 'received_by'
-
-
 class StorageShedViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.ModelViewSet):
     """GET /api/storage-shed/?storage_location=<id> lists only that storage location's sheds."""
     queryset = StorageShed.objects.select_related('sto_loc__location', 'shed')
@@ -228,40 +268,99 @@ class StorageShedViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.ModelView
         return queryset
 
 
-class StockViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.ModelViewSet):
-    queryset = Stock.objects.select_related(
-        'item', 'status', 'location__shed', 'location__sto_loc__location'
-    )
-    serializer_class = StockSerializer
+def filter_by_params(queryset, request, filters):
+    """Applies `?<param>=<id>` filters given as {param: lookup}."""
+    for param, lookup in filters.items():
+        value = id_param(request, param)
+        if value is not None:
+            queryset = queryset.filter(**{lookup: value})
+    return queryset
 
 
-class StockTransactionViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.ModelViewSet):
-    """Sending and receiving storage locations both see a transfer; only the sender creates or changes it."""
-    queryset = StockTransaction.objects.all()
-    serializer_class = StockTransactionSerializer
-
-    def scope_filter(self, location_id):
-        return Q(from_warehouse=location_id) | Q(to_warehouse=location_id)
+class InventoryTransactionViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.ModelViewSet):
+    """
+    All incoming and outgoing stock movements. POST one line, or a list of lines that are saved together.
+    Both the sending and the receiving storage location see a transaction; a storage location user changes only
+    lines sent from their storage location, or received there from outside (donation, procurement, NDMA...).
+    Filters: ?txn_type, ?direction (in/out/transfer), ?item, ?sub_category, ?spec, ?status, ?storage_location,
+    ?date_from and ?date_to (YYYY-MM-DD).
+    """
+    queryset = InventoryTransaction.objects.select_related(
+        'txn_type', 'item__item_category', 'item__unit', 'sub_cat', 'spec', 'status', 'supplier', 'donor',
+        'from_storage_location', 'from_sto_shed__shed', 'to_storage_location', 'to_sto_shed__shed',
+    ).order_by('-txn_date', '-txn_id')
+    serializer_class = InventoryTransactionSerializer
+    created_by_field = 'created_by'
 
     def write_filter(self, location_id):
-        return Q(from_warehouse=location_id)
+        return Q(from_storage_location=location_id) | Q(from_storage_location__isnull=True, to_storage_location=location_id)
+
+    def get_queryset(self):
+        queryset = filter_by_params(super().get_queryset(), self.request, {
+            'txn_type': 'txn_type', 'item': 'item', 'sub_category': 'sub_cat', 'spec': 'spec', 'status': 'status',
+        })
+        params = self.request.query_params
+        if params.get('direction'):
+            queryset = queryset.filter(txn_type__direction=params['direction'])
+        location_id = storage_location_param(self.request)
+        if location_id is not None:
+            queryset = queryset.filter(Q(from_storage_location=location_id) | Q(to_storage_location=location_id))
+        if params.get('date_from'):
+            queryset = queryset.filter(txn_date__gte=params['date_from'])
+        if params.get('date_to'):
+            queryset = queryset.filter(txn_date__lte=params['date_to'])
+        return queryset
+
+    def get_serializer(self, *args, **kwargs):
+        if isinstance(kwargs.get('data'), list):
+            kwargs['many'] = True
+        return super().get_serializer(*args, **kwargs)
+
+    def perform_destroy(self, instance):
+        with transaction.atomic():
+            keys = stock_keys(instance)
+            super().perform_destroy(instance)
+            check_stock(keys)
+
+
+class StockViewSet(LocationScopedMixin, viewsets.ReadOnlyModelViewSet):
+    """
+    Quantity on hand per storage location, shed, item, sub category, spec and status (read-only; add transactions
+    to change it). Filters: ?storage_location, ?shed (storage shed id), ?item, ?sub_category, ?spec, ?status, ?category.
+    """
+    queryset = StockBalance.objects.select_related(
+        'storage_location__location', 'sto_shed__shed', 'item__item_category', 'item__unit', 'sub_cat', 'spec', 'status',
+    ).order_by('storage_location', 'item__item_name', 'row_id')
+    serializer_class = StockBalanceSerializer
+
+    def get_queryset(self):
+        return filter_by_params(super().get_queryset(), self.request, {
+            'storage_location': 'storage_location', 'shed': 'sto_shed', 'item': 'item', 'sub_category': 'sub_cat',
+            'spec': 'spec', 'status': 'status', 'category': 'item__item_category',
+        })
 
 
 class TotalInventoryViewSet(viewsets.ViewSet):
     """
-    Read-only total stock per item (only the user's own storage location unless master).
-    GET /api/total-inventory/
+    Read-only total stock per item, sub category, spec and status (only the user's own storage location unless master).
+    GET /api/total-inventory/ (filters: ?storage_location, ?item, ?category, ?status)
     """
     def list(self, request):
+        stock = filter_by_params(limit_to_location(StockBalance.objects.all(), request.user), request, {
+            'storage_location': 'storage_location', 'item': 'item', 'category': 'item__item_category', 'status': 'status',
+        })
         inventory = (
-            limit_to_location(Stock.objects.all(), request.user)
-            .values(
-                'item_id', 'unit',
+            stock.values(
+                'item_id', 'sub_cat_id', 'spec_id', 'status_id',
                 item_name=F('item__item_name'),
                 item_code=F('item__item_code'),
                 category_name=F('item__item_category__category_name'),
+                sub_cat_name=F('sub_cat__sub_cat_name'),
+                spec_name=F('spec__spec_name'),
+                status_name=F('status__status_name'),
+                unit=F('item__unit__unit_name'),
             )
-            .annotate(total_quantity=Sum('quantity'), stock_entries=Count('stock_id'))
+            .annotate(total_quantity=Sum('quantity'), stock_entries=Count('row_id'))
             .order_by('-total_quantity')
         )
         return Response(TotalInventorySerializer(inventory, many=True).data)

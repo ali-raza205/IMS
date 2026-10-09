@@ -20,30 +20,6 @@ class Categories(models.Model):
         db_table = 'categories'
 
 
-class Donation(models.Model):
-    donation_id = models.BigAutoField(primary_key=True)
-    donation_no = models.CharField(unique=True, max_length=50)
-    donor = models.ForeignKey('Donors', models.DO_NOTHING)
-    donation_date = models.DateField()
-    storage_location = models.ForeignKey('StorageLocation', models.DO_NOTHING, db_column='warehouse_id')
-    reference_no = models.CharField(max_length=100, blank=True, null=True)
-    remarks = models.TextField(blank=True, null=True)
-    created_by = models.BigIntegerField(blank=True, null=True)
-    created_at = models.DateTimeField(blank=True, null=True)
-    item = models.ForeignKey('Items', models.DO_NOTHING)
-    quantity = models.DecimalField(max_digits=15, decimal_places=2)
-    estimated_unit_value = models.DecimalField(max_digits=15, decimal_places=2, blank=True, null=True)
-    batch_no = models.CharField(max_length=100, blank=True, null=True)
-    details = models.TextField(blank=True, null=True)
-    manufacturing_date = models.DateField(blank=True, null=True)
-    expiry_date = models.DateField(blank=True, null=True)
-    sto_shed = models.ForeignKey('StorageShed', models.DO_NOTHING, blank=True, null=True)
-    received_date = models.DateField(blank=True, null=True)
-
-    class Meta:
-        managed = False
-        db_table = 'donation'
-
 
 class Donors(models.Model):
     donor_id = models.BigAutoField(primary_key=True)
@@ -60,28 +36,12 @@ class Donors(models.Model):
         db_table = 'donors'
 
 
-class GoodsReceipt(models.Model):
-    grn_id = models.BigAutoField(primary_key=True)
-    po = models.ForeignKey('PurchaseOrder', models.DO_NOTHING)
-    grn_no = models.CharField(unique=True, max_length=50, blank=True, null=True)
-    receipt_date = models.DateField()
-    received_by = models.BigIntegerField(blank=True, null=True)
-    remarks = models.TextField(blank=True, null=True)
-    item = models.ForeignKey('Items', models.DO_NOTHING)
-    received_quantity = models.DecimalField(max_digits=15, decimal_places=2)
-    unit_cost = models.DecimalField(max_digits=15, decimal_places=2, blank=True, null=True)
-    batch_no = models.CharField(max_length=100, blank=True, null=True)
-    details = models.TextField(blank=True, null=True)
-    manufacturing_date = models.DateField(blank=True, null=True)
-    expiry_date = models.DateField(blank=True, null=True)
-    sto_shed = models.ForeignKey('StorageShed', models.DO_NOTHING, blank=True, null=True)
-
-    class Meta:
-        managed = False
-        db_table = 'goods_receipt'
-
 
 class ItemStatus(models.Model):
+    """Serviceable (1) or Non Serviceable (2)."""
+    SERVICEABLE = 1
+    NON_SERVICEABLE = 2
+
     status_id = models.BigAutoField(primary_key=True)
     status_name = models.TextField()
 
@@ -96,7 +56,7 @@ class Items(models.Model):
     item_description = models.TextField(db_column='Item_description', blank=True, null=True)  # Field name made lowercase.
     item_category = models.ForeignKey(Categories, models.DO_NOTHING, db_column='item_category', blank=True, null=True)
     item_code = models.CharField(unique=True, max_length=50, blank=True, null=True)
-    unit_id = models.BigIntegerField(blank=True, null=True)
+    unit = models.ForeignKey('Units', models.DO_NOTHING, blank=True, null=True)
     barcode = models.CharField(max_length=100, blank=True, null=True)
     # DB columns are unbounded numeric; these sizes only control API formatting/validation.
     minimum_stock = models.DecimalField(max_digits=20, decimal_places=4, blank=True, null=True)
@@ -108,6 +68,119 @@ class Items(models.Model):
     class Meta:
         managed = False
         db_table = 'items'
+
+
+class ItemSubCategory(models.Model):
+    """A kind of an item, e.g. Boat -> Inflatable / Fiberglass."""
+    sub_cat_id = models.BigAutoField(primary_key=True)
+    item = models.ForeignKey(Items, models.DO_NOTHING, related_name='sub_categories')
+    sub_cat_name = models.TextField()
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        managed = False
+        db_table = 'item_sub_category'
+
+
+class ItemSpec(models.Model):
+    """
+    A size, capacity or power of an item, e.g. Boat -> 19 ft.
+    With a sub category it only applies to that sub category (Fiberglass -> 19 ft), without one to the whole item.
+    """
+    spec_id = models.BigAutoField(primary_key=True)
+    item = models.ForeignKey(Items, models.DO_NOTHING, related_name='specs')
+    sub_cat = models.ForeignKey(ItemSubCategory, models.DO_NOTHING, blank=True, null=True, related_name='specs')
+    spec_name = models.TextField()
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        managed = False
+        db_table = 'item_spec'
+
+
+class TransactionType(models.Model):
+    """
+    Donation, Procurement, NDMA and Opening Stock bring stock in, Dispatch takes it out,
+    Internal Transfer moves it from one storage location to another.
+    """
+    IN = 'in'
+    OUT = 'out'
+    TRANSFER = 'transfer'
+    DIRECTION_CHOICES = [(IN, 'Incoming'), (OUT, 'Outgoing'), (TRANSFER, 'Transfer')]
+
+    type_id = models.BigAutoField(primary_key=True)
+    type_name = models.CharField(unique=True, max_length=50)
+    direction = models.CharField(max_length=10, choices=DIRECTION_CHOICES)
+
+    class Meta:
+        managed = False
+        db_table = 'transaction_type'
+
+    def __str__(self):
+        return self.type_name
+
+
+class InventoryTransaction(models.Model):
+    """
+    Every incoming and outgoing movement, one item line per row.
+    Incoming rows fill the `to_` storage location, outgoing rows the `from_` one, transfers both.
+    """
+    txn_id = models.BigAutoField(primary_key=True)
+    txn_no = models.CharField(max_length=50, blank=True, null=True)
+    txn_type = models.ForeignKey(TransactionType, models.DO_NOTHING)
+    txn_date = models.DateField()
+    item = models.ForeignKey(Items, models.DO_NOTHING)
+    sub_cat = models.ForeignKey(ItemSubCategory, models.DO_NOTHING, blank=True, null=True)
+    spec = models.ForeignKey(ItemSpec, models.DO_NOTHING, blank=True, null=True)
+    status = models.ForeignKey(ItemStatus, models.DO_NOTHING, default=ItemStatus.SERVICEABLE)
+    quantity = models.DecimalField(max_digits=15, decimal_places=2)
+    unit_price = models.DecimalField(max_digits=15, decimal_places=2, blank=True, null=True)
+    from_storage_location = models.ForeignKey(
+        'StorageLocation', models.DO_NOTHING, blank=True, null=True, related_name='outgoing_transactions'
+    )
+    from_sto_shed = models.ForeignKey(
+        'StorageShed', models.DO_NOTHING, blank=True, null=True, related_name='outgoing_transactions'
+    )
+    to_storage_location = models.ForeignKey(
+        'StorageLocation', models.DO_NOTHING, blank=True, null=True, related_name='incoming_transactions'
+    )
+    to_sto_shed = models.ForeignKey(
+        'StorageShed', models.DO_NOTHING, blank=True, null=True, related_name='incoming_transactions'
+    )
+    supplier = models.ForeignKey('Suppliers', models.DO_NOTHING, blank=True, null=True)
+    donor = models.ForeignKey(Donors, models.DO_NOTHING, blank=True, null=True)
+    issued_to = models.TextField(blank=True, null=True)
+    invoice_no = models.CharField(max_length=100, blank=True, null=True)
+    invoice_date = models.DateField(blank=True, null=True)
+    batch_no = models.CharField(max_length=100, blank=True, null=True)
+    manufacturing_date = models.DateField(blank=True, null=True)
+    expiry_date = models.DateField(blank=True, null=True)
+    remarks = models.TextField(blank=True, null=True)
+    created_by = models.BigIntegerField(blank=True, null=True)
+    created_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'inventory_transaction'
+
+
+class StockBalance(models.Model):
+    """
+    Read-only database view: quantity on hand per storage location, shed, item, sub category, spec and status,
+    i.e. everything received there minus everything sent from there.
+    """
+    row_id = models.BigIntegerField(primary_key=True)
+    storage_location = models.ForeignKey('StorageLocation', models.DO_NOTHING)
+    sto_shed = models.ForeignKey('StorageShed', models.DO_NOTHING, blank=True, null=True)
+    item = models.ForeignKey(Items, models.DO_NOTHING)
+    sub_cat = models.ForeignKey(ItemSubCategory, models.DO_NOTHING, blank=True, null=True)
+    spec = models.ForeignKey(ItemSpec, models.DO_NOTHING, blank=True, null=True)
+    status = models.ForeignKey(ItemStatus, models.DO_NOTHING)
+    quantity = models.DecimalField(max_digits=20, decimal_places=2)
+
+    class Meta:
+        managed = False
+        db_table = 'stock_balance'
 
 
 class Locations(models.Model):
@@ -122,30 +195,6 @@ class Locations(models.Model):
         return self.location_name or f'Location {self.location_id}'
 
 
-class PurchaseOrder(models.Model):
-    po_id = models.BigAutoField(primary_key=True)
-    proc_date = models.DateField(blank=True, null=True)
-    storage_location = models.ForeignKey('StorageLocation', models.DO_NOTHING, db_column='location_id', blank=True, null=True)
-    po_number = models.CharField(unique=True, max_length=50, blank=True, null=True)
-    supplier = models.ForeignKey('Suppliers', models.DO_NOTHING, blank=True, null=True)
-    invoice_no = models.CharField(max_length=100, blank=True, null=True)
-    invoice_date = models.DateField(blank=True, null=True)
-    remarks = models.TextField(blank=True, null=True)
-    created_by = models.BigIntegerField(blank=True, null=True)
-    created_at = models.DateTimeField(blank=True, null=True)
-    item = models.ForeignKey(Items, models.DO_NOTHING)
-    quantity = models.DecimalField(max_digits=10, decimal_places=0)
-    unit_price = models.FloatField()
-    details = models.CharField(blank=True, null=True)
-    manufacturing_date = models.DateField(blank=True, null=True)
-    expiry_date = models.DateField(blank=True, null=True)
-    sto_shed = models.ForeignKey('StorageShed', models.DO_NOTHING, blank=True, null=True)
-    received_date = models.DateField(blank=True, null=True)
-
-    class Meta:
-        managed = False
-        db_table = 'purchase_order'
-
 
 class Shed(models.Model):
     shed_id = models.BigAutoField(primary_key=True)
@@ -156,40 +205,6 @@ class Shed(models.Model):
         db_table = 'shed'
 
 
-class Stock(models.Model):
-    item = models.ForeignKey(Items, models.DO_NOTHING)
-    location = models.ForeignKey('StorageShed', models.DO_NOTHING)
-    quantity = models.DecimalField(max_digits=20, decimal_places=4)
-    unit = models.TextField()
-    status = models.ForeignKey(ItemStatus, models.DO_NOTHING)
-    stock_id = models.BigAutoField(primary_key=True)
-    batch_id = models.BigIntegerField(blank=True, null=True)
-    bin_id = models.BigIntegerField(blank=True, null=True)
-    updated_at = models.DateTimeField(blank=True, null=True)
-    source_type = models.CharField(max_length=20, blank=True, null=True)
-    source_id = models.BigIntegerField(blank=True, null=True)
-
-    class Meta:
-        managed = False
-        db_table = 'stock'
-        unique_together = (('item', 'location'),)
-
-
-class StockTransaction(models.Model):
-    transection_id = models.BigAutoField(primary_key=True)
-    stock = models.ForeignKey(Stock, models.DO_NOTHING)
-    # storage_location ids (st_loc_id)
-    from_warehouse = models.BigIntegerField()
-    to_warehouse = models.BigIntegerField()
-    quantity = models.DecimalField(max_digits=20, decimal_places=4)
-    issue_date = models.DateField()
-    reciving_date = models.DateField()
-    note = models.TextField(blank=True, null=True)
-    image_id = models.BigIntegerField(blank=True, null=True)
-
-    class Meta:
-        managed = False
-        db_table = 'stock_transaction'
 
 
 class StorageLocation(models.Model):

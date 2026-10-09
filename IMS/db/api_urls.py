@@ -4,23 +4,23 @@ from rest_framework_simplejwt.views import TokenRefreshView
 
 from .api_views import (
     CategoriesViewSet,
-    DonationViewSet,
     DonorsViewSet,
-    GoodsReceiptViewSet,
+    InventoryTransactionViewSet,
+    ItemSpecViewSet,
     ItemStatusViewSet,
+    ItemSubCategoryViewSet,
     ItemsViewSet,
     LocationsViewSet,
     LoginView,
     MeView,
-    PurchaseOrderViewSet,
     ShedViewSet,
-    StorageTypeViewSet,
+    StockViewSet,
     StorageLocationViewSet,
     StorageShedViewSet,
-    StockViewSet,
-    StockTransactionViewSet,
+    StorageTypeViewSet,
     SuppliersViewSet,
     TotalInventoryViewSet,
+    TransactionTypeViewSet,
     UnitsViewSet,
 )
 from .dashboard import DashboardView
@@ -30,12 +30,13 @@ router = DefaultRouter()
 
 router.register(r'categories', CategoriesViewSet)
 router.register(r'donors', DonorsViewSet)
-router.register(r'donation', DonationViewSet)
-router.register(r'goods-receipt', GoodsReceiptViewSet)
 router.register(r'item-status', ItemStatusViewSet)
 router.register(r'items', ItemsViewSet)
+router.register(r'item-sub-category', ItemSubCategoryViewSet)
+router.register(r'item-spec', ItemSpecViewSet)
+router.register(r'transaction-type', TransactionTypeViewSet)
+router.register(r'transactions', InventoryTransactionViewSet)
 router.register(r'locations', LocationsViewSet)
-router.register(r'purchase-order', PurchaseOrderViewSet)
 router.register(r'shed', ShedViewSet)
 router.register(r'suppliers', SuppliersViewSet)
 router.register(r'units', UnitsViewSet)
@@ -43,7 +44,6 @@ router.register(r'storage-type', StorageTypeViewSet)
 router.register(r'storage-location', StorageLocationViewSet)
 router.register(r'storage-shed', StorageShedViewSet)
 router.register(r'stock', StockViewSet)
-router.register(r'transection', StockTransactionViewSet)
 router.register(r'total-inventory', TotalInventoryViewSet, basename='total-inventory')
 
 urlpatterns = [

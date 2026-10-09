@@ -1,24 +1,24 @@
-import json
-
+from django.db import transaction
+from django.db.models import Q, Sum
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from .models import (
     Categories,
-    Donation,
     Donors,
-    GoodsReceipt,
+    InventoryTransaction,
+    ItemSpec,
     ItemStatus,
+    ItemSubCategory,
     Items,
     Locations,
-    PurchaseOrder,
     Shed,
+    StockBalance,
     StorageLocation,
     StorageShed,
     StorageType,
-    Stock,
-    StockTransaction,
     Suppliers,
+    TransactionType,
     Units,
     UserProfile,
 )
@@ -108,12 +108,38 @@ class UnitsSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
+class TransactionTypeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TransactionType
+        fields = "__all__"
+
+
+def clean_name(value):
+    """Name with surrounding and doubled spaces removed."""
+    return ' '.join(value.split())
+
+
+def name_taken(serializer, queryset, field, name):
+    """Names are unique ignoring case and spaces (the database enforces the same)."""
+    duplicate = queryset.filter(**{f'{field}__iexact': name})
+    if serializer.instance is not None:
+        duplicate = duplicate.exclude(pk=serializer.instance.pk)
+    return duplicate.exists()
+
+
 class ItemsSerializer(serializers.ModelSerializer):
     item_category = CategoriesSerializer(read_only=True)
+    unit_name = name_field('unit.unit_name')
 
     class Meta:
         model = Items
         fields = "__all__"
+
+    def validate_item_name(self, value):
+        value = clean_name(value)
+        if name_taken(self, Items.objects.all(), 'item_name', value):
+            raise serializers.ValidationError('This item already exists; add a sub category or spec to it instead.')
+        return value
 
 
 # --- Storage ---------------------------------------------------------------
@@ -137,204 +163,292 @@ class StorageShedSerializer(LocationScopedFieldsMixin, serializers.ModelSerializ
         fields = "__all__"
 
 
-class StockSerializer(LocationScopedFieldsMixin, serializers.ModelSerializer):
+class StockBalanceSerializer(serializers.ModelSerializer):
+    """Quantity on hand; read-only, it follows from the transactions."""
+    storage_location_name = name_field('storage_location.details')
+    location_name = name_field('storage_location.location.location_name')
+    shed_name = name_field('sto_shed.shed.shed_name')
     item_name = name_field('item.item_name')
-    storage_location_name = name_field('location.sto_loc.details')
-    location_name = name_field('location.sto_loc.location.location_name')
-    shed_name = name_field('location.shed.shed_name')
+    category_name = name_field('item.item_category.category_name')
+    sub_cat_name = name_field('sub_cat.sub_cat_name')
+    spec_name = name_field('spec.spec_name')
     status_name = name_field('status.status_name')
+    unit_name = name_field('item.unit.unit_name')
 
     class Meta:
-        model = Stock
-        fields = "__all__"
-
-
-class StockTransactionSerializer(LocationScopedFieldsMixin, serializers.ModelSerializer):
-    class Meta:
-        model = StockTransaction
-        fields = "__all__"
+        model = StockBalance
+        exclude = ['row_id']
 
 
 class TotalInventorySerializer(serializers.Serializer):
-    """Read-only serializer for aggregated total inventory per item."""
+    """Read-only serializer for aggregated total inventory per item, sub category, spec and status."""
     item_id = serializers.IntegerField()
     item_name = serializers.CharField()
     item_code = serializers.CharField(allow_null=True)
     category_name = serializers.CharField(allow_null=True)
+    sub_cat_id = serializers.IntegerField(allow_null=True)
+    sub_cat_name = serializers.CharField(allow_null=True)
+    spec_id = serializers.IntegerField(allow_null=True)
+    spec_name = serializers.CharField(allow_null=True)
+    status_id = serializers.IntegerField()
+    status_name = serializers.CharField()
     total_quantity = serializers.DecimalField(max_digits=15, decimal_places=2)
-    unit = serializers.CharField()
+    unit = serializers.CharField(allow_null=True)
     stock_entries = serializers.IntegerField()
 
 
-# --- Records with JSON line details -----------------------------------------
+# --- Item sub categories and specs -------------------------------------------
 
-class JSONDetailsMixin(serializers.Serializer):
-    """
-    Stores the `details` list as JSON text on the record itself.
-    Missing item and `detail_fields` values are taken from the first line.
-    """
-    details = serializers.JSONField(required=False, allow_null=True)
-    detail_fields = ()
-
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        # details is stored as JSON text; return it as real JSON
-        if isinstance(data.get('details'), str):
-            try:
-                data['details'] = json.loads(data['details'])
-            except ValueError:
-                pass
-        return data
-
-    def _pack_details(self, validated_data):
-        """Store details as JSON text and, if missing, take item and detail_fields from its first line."""
-        details = validated_data.pop('details', None)
-        if details is None:
-            return
-        if isinstance(details, str):
-            try:
-                details = json.loads(details)
-            except ValueError:
-                pass
-
-        if isinstance(details, list) and details and isinstance(details[0], dict):
-            first = details[0]
-            if validated_data.get('item') is None:
-                item_id = first.get('item_id') or first.get('item')
-                if item_id is not None:
-                    validated_data.pop('item', None)
-                    validated_data['item_id'] = item_id
-            for key in self.detail_fields:
-                if validated_data.get(key) is None and key in first:
-                    validated_data[key] = first[key]
-
-        validated_data['details'] = json.dumps(details)
-
-    def create(self, validated_data):
-        self._pack_details(validated_data)
-        return super().create(validated_data)
-
-    def update(self, instance, validated_data):
-        self._pack_details(validated_data)
-        return super().update(instance, validated_data)
+def specs_for(item_id, sub_cat_id=None):
+    """Active specs to choose from for an item: the whole item's and, with a sub category, that sub category's."""
+    specs = Q(sub_cat__isnull=True)
+    if sub_cat_id is not None:
+        specs |= Q(sub_cat_id=sub_cat_id)
+    return ItemSpec.objects.filter(specs, item_id=item_id, is_active=True)
 
 
-class OwnStorageLocationMixin:
-    """
-    New records without `storage_location` get the user's own storage location.
-    Master and all areas users have to choose one.
-    """
+class ItemSubCategorySerializer(serializers.ModelSerializer):
+    item_name = name_field('item.item_name')
 
-    def get_fields(self):
-        fields = super().get_fields()
-        fields['storage_location'].required = False
-        return fields
+    class Meta:
+        model = ItemSubCategory
+        fields = "__all__"
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
-        if self.instance is None and attrs.get('storage_location') is None:
-            request = self.context.get('request')
-            user = request.user if request is not None else None
-            profile = getattr(user, 'profile', None)
-            if user is None or sees_all_locations(user) or profile is None or profile.storage_location is None:
-                raise serializers.ValidationError({'storage_location': 'This field is required.'})
-            attrs['storage_location'] = profile.storage_location
+        item = attrs.get('item', getattr(self.instance, 'item', None))
+        name = attrs['sub_cat_name'] = clean_name(attrs.get('sub_cat_name', getattr(self.instance, 'sub_cat_name', '')))
+        if name_taken(self, ItemSubCategory.objects.filter(item=item), 'sub_cat_name', name):
+            raise serializers.ValidationError({'sub_cat_name': 'This item already has this sub category.'})
         return attrs
 
 
-class ShedNumberMixin:
-    """
-    `sto_shed` also accepts a shed number (Shed id, e.g. 1 for "Shed-1"): it becomes the storage shed with
-    that shed at the record's storage location. Ids of that storage location's storage sheds are kept as is.
-    The record's storage location comes from `storage_location_id_from`, else the user's own.
-    """
+class ItemSpecSerializer(serializers.ModelSerializer):
+    item_name = name_field('item.item_name')
+    sub_cat_name = name_field('sub_cat.sub_cat_name')
 
-    def storage_location_id_from(self, data):
-        if data.get('storage_location') not in (None, ''):
-            return data['storage_location']
-        return self.instance.storage_location_id if self.instance is not None else None
+    class Meta:
+        model = ItemSpec
+        fields = "__all__"
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        item = attrs.get('item', getattr(self.instance, 'item', None))
+        sub_cat = attrs.get('sub_cat', getattr(self.instance, 'sub_cat', None))
+        if sub_cat is not None and sub_cat.item_id != item.pk:
+            raise serializers.ValidationError({'sub_cat': 'This sub category is not of the chosen item.'})
+        name = attrs['spec_name'] = clean_name(attrs.get('spec_name', getattr(self.instance, 'spec_name', '')))
+        if name_taken(self, ItemSpec.objects.filter(item=item, sub_cat=sub_cat), 'spec_name', name):
+            raise serializers.ValidationError({'spec_name': 'This spec already exists.'})
+        return attrs
+
+
+def item_options(item):
+    """An item's active sub categories, each with its specs, plus the specs of the whole item."""
+    specs = list(item.specs.filter(is_active=True).order_by('spec_name').values('spec_id', 'spec_name', 'sub_cat_id'))
+    return {
+        'item_id': item.pk,
+        'item_name': item.item_name,
+        'unit_name': item.unit.unit_name if item.unit else None,
+        'sub_categories': [
+            {
+                'sub_cat_id': sub_cat.pk,
+                'sub_cat_name': sub_cat.sub_cat_name,
+                'specs': [spec for spec in specs if spec['sub_cat_id'] == sub_cat.pk],
+            }
+            for sub_cat in item.sub_categories.filter(is_active=True).order_by('sub_cat_name')
+        ],
+        'specs': [spec for spec in specs if spec['sub_cat_id'] is None],
+    }
+
+
+# --- Inventory transactions -------------------------------------------------
+
+SIDES = ('from', 'to')
+
+
+def side_fields(side):
+    """The storage location and shed fields of the sending ('from') or receiving ('to') side."""
+    return f'{side}_storage_location', f'{side}_sto_shed'
+
+
+def sides_used(direction):
+    """Sides a transaction of this direction fills; the first is the one a storage location user's own location goes on."""
+    return {
+        TransactionType.IN: ('to',),
+        TransactionType.OUT: ('from',),
+        TransactionType.TRANSFER: ('from', 'to'),
+    }[direction]
+
+
+def stock_keys(txn):
+    """(storage location, shed, item, sub category, spec, status) of each side the transaction touches."""
+    keys = set()
+    for side in SIDES:
+        location_name, shed_name = side_fields(side)
+        location_id = getattr(txn, f'{location_name}_id')
+        if location_id is not None:
+            keys.add((location_id, getattr(txn, f'{shed_name}_id'),
+                      txn.item_id, txn.sub_cat_id, txn.spec_id, txn.status_id))
+    return keys
+
+
+def on_hand(location_id, shed_id, item_id, sub_cat_id, spec_id, status_id):
+    """Quantity at a storage location, or at one of its sheds when `shed_id` is given."""
+    rows = InventoryTransaction.objects.filter(item_id=item_id, sub_cat_id=sub_cat_id, spec_id=spec_id, status_id=status_id)
+    received, sent = Q(to_storage_location_id=location_id), Q(from_storage_location_id=location_id)
+    if shed_id is not None:
+        received &= Q(to_sto_shed_id=shed_id)
+        sent &= Q(from_sto_shed_id=shed_id)
+
+    def total(q):
+        return rows.filter(q).aggregate(total=Sum('quantity'))['total'] or 0
+
+    return total(received) - total(sent)
+
+
+def check_stock(keys):
+    """
+    Raises a validation error when a save left less than nothing in stock at a storage location or shed.
+    Runs after saving, inside the request's database transaction, so the save is rolled back.
+    """
+    for location_id, shed_id, *item_key in keys:
+        for shed in {None, shed_id}:
+            quantity = on_hand(location_id, shed, *item_key)
+            if quantity < 0:
+                place = StorageShed.objects.get(pk=shed) if shed else StorageLocation.objects.get(pk=location_id)
+                raise serializers.ValidationError({
+                    'quantity': f'Not enough stock at {place.details or place}: this would leave {quantity} '
+                                f'of this item, sub category, spec and status.',
+                })
+
+
+class InventoryTransactionListSerializer(serializers.ListSerializer):
+    """POST a list to save several item lines at once; they are saved together or not at all."""
+
+    def create(self, validated_data):
+        with transaction.atomic():
+            return [self.child.create(attrs) for attrs in validated_data]
+
+
+class InventoryTransactionSerializer(LocationScopedFieldsMixin, serializers.ModelSerializer):
+    """
+    One item line of a donation, procurement, NDMA receipt, dispatch, internal transfer or opening stock.
+
+    Incoming types need `to_storage_location`, Dispatch needs `from_storage_location`, Internal Transfer both.
+    Storage location users may leave out their own side (the receiving side of incoming lines, else the sending one).
+    A shed may be given instead of its storage location, as a storage shed id or as the shed number there.
+    `sub_cat` and `spec` must belong to the item; new lines must pick them when the item has any.
+    No save may leave less than nothing in stock.
+    """
+    txn_type_name = name_field('txn_type.type_name')
+    direction = name_field('txn_type.direction')
+    item_name = name_field('item.item_name')
+    category_name = name_field('item.item_category.category_name')
+    unit_name = name_field('item.unit.unit_name')
+    sub_cat_name = name_field('sub_cat.sub_cat_name')
+    spec_name = name_field('spec.spec_name')
+    status_name = name_field('status.status_name')
+    from_storage_location_name = name_field('from_storage_location.details')
+    from_shed_name = name_field('from_sto_shed.shed.shed_name')
+    to_storage_location_name = name_field('to_storage_location.details')
+    to_shed_name = name_field('to_sto_shed.shed.shed_name')
+    supplier_name = name_field('supplier.supplier_name')
+    donor_name = name_field('donor.donor_name')
+
+    # A transfer goes to another storage location, so the receiving side is not limited to the user's own.
+    unscoped_fields = ('to_storage_location', 'to_sto_shed')
+
+    class Meta:
+        model = InventoryTransaction
+        fields = "__all__"
+        read_only_fields = ['created_by', 'created_at']
+        list_serializer_class = InventoryTransactionListSerializer
+        extra_kwargs = {'status': {'required': False}}
+
+    def own_location_id(self):
+        """The storage location user's own storage location; None for master and all areas users."""
+        request = self.context.get('request')
+        if request is None or sees_all_locations(request.user):
+            return None
+        return user_location_id(request.user)
 
     def to_internal_value(self, data):
-        value = data.get('sto_shed') if hasattr(data, 'get') else None
-        if value not in (None, ''):
-            request = self.context.get('request')
-            location_id = self.storage_location_id_from(data)
-            if location_id is None and request is not None:
-                location_id = user_location_id(request.user)
-            sheds = StorageShed.objects.filter(sto_loc_id=location_id)
-            try:
-                if location_id is not None and not sheds.filter(pk=value).exists():
-                    match = sheds.filter(shed_id=value).values_list('pk', flat=True).first()
-                    if match is not None:
-                        data = data.copy()
-                        data['sto_shed'] = match
-            except (TypeError, ValueError):
-                pass  # not a number; the field reports it
+        """A shed number (Shed id, e.g. 1 for "Shed-1") becomes the storage shed with that shed at the side's storage location."""
+        if hasattr(data, 'get'):
+            for side in SIDES:
+                location_name, shed_name = side_fields(side)
+                value = data.get(shed_name)
+                if value in (None, ''):
+                    continue
+                location_id = data.get(location_name)
+                if location_id in (None, '') and self.instance is not None:
+                    location_id = getattr(self.instance, f'{location_name}_id')
+                if location_id in (None, ''):
+                    location_id = self.own_location_id()
+                sheds = StorageShed.objects.filter(sto_loc_id=location_id)
+                try:
+                    if location_id is not None and not sheds.filter(pk=value).exists():
+                        match = sheds.filter(shed_id=value).values_list('pk', flat=True).first()
+                        if match is not None:
+                            data = data.copy()
+                            data[shed_name] = match
+                except (TypeError, ValueError):
+                    pass  # not a number; the field reports it
         return super().to_internal_value(data)
 
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        instance = self.instance
 
-# --- Purchase order --------------------------------------------------------
+        def value(name):
+            return attrs[name] if name in attrs else getattr(instance, name, None)
 
-class PurchaseOrderSerializer(OwnStorageLocationMixin, ShedNumberMixin, LocationScopedFieldsMixin, JSONDetailsMixin, serializers.ModelSerializer):
-    storage_location_name = name_field('storage_location.details')
-    location_name = name_field('storage_location.location.location_name')
-    supplier_name = name_field('supplier.supplier_name')
-    item_name = name_field('item.item_name')
-    detail_fields = ('quantity', 'unit_price')
+        errors = {}
+        txn_type = value('txn_type')
+        used = sides_used(txn_type.direction)
+        for side in SIDES:
+            location_name, shed_name = side_fields(side)
+            location, shed = value(location_name), value(shed_name)
+            if side not in used:
+                if location is not None or shed is not None:
+                    errors[location_name] = f'Not used for {txn_type.type_name}.'
+                continue
+            if location is None and shed is not None:
+                location = attrs[location_name] = shed.sto_loc
+            if location is None and side == used[0] and self.own_location_id() is not None:
+                location = attrs[location_name] = StorageLocation.objects.get(pk=self.own_location_id())
+            if location is None:
+                errors[location_name] = 'This field is required.'
+            elif shed is not None and shed.sto_loc_id != location.pk:
+                errors[shed_name] = 'This shed is not at that storage location.'
+        if len(used) == 2 and value('from_storage_location') is not None \
+                and value('from_storage_location') == value('to_storage_location'):
+            errors['to_storage_location'] = 'Must be a different storage location.'
 
-    class Meta:
-        model = PurchaseOrder
-        fields = "__all__"
-        read_only_fields = ['created_by', 'created_at']
-        extra_kwargs = {
-            'item': {'required': False},
-            'quantity': {'required': False},
-            'unit_price': {'required': False},
-        }
+        item, sub_cat, spec = value('item'), value('sub_cat'), value('spec')
+        if sub_cat is not None and sub_cat.item_id != item.pk:
+            errors['sub_cat'] = 'This sub category is not of the chosen item.'
+        if spec is not None and (spec.item_id != item.pk or spec.sub_cat_id not in (None, getattr(sub_cat, 'pk', None))):
+            errors['spec'] = 'This spec is not of the chosen item and sub category.'
+        if instance is None and not errors:
+            if sub_cat is None and item.sub_categories.filter(is_active=True).exists():
+                errors['sub_cat'] = 'Choose a sub category of this item.'
+            elif spec is None and specs_for(item.pk, getattr(sub_cat, 'pk', None)).exists():
+                errors['spec'] = 'Choose a spec of this item.'
+        if errors:
+            raise serializers.ValidationError(errors)
+        return attrs
+
+    def create(self, validated_data):
+        txn = super().create(validated_data)
+        check_stock(stock_keys(txn))
+        return txn
+
+    def update(self, instance, validated_data):
+        before = stock_keys(instance)
+        txn = super().update(instance, validated_data)
+        check_stock(before | stock_keys(txn))
+        return txn
 
 
-# --- Goods receipt ---------------------------------------------------------
-
-class GoodsReceiptSerializer(ShedNumberMixin, LocationScopedFieldsMixin, JSONDetailsMixin, serializers.ModelSerializer):
-    po_id = serializers.PrimaryKeyRelatedField(queryset=PurchaseOrder.objects.all(), source='po')
-    po_number = name_field('po.po_number')
-    supplier_name = name_field('po.supplier.supplier_name')
-    item_name = name_field('item.item_name')
-    detail_fields = ('received_quantity', 'unit_cost', 'batch_no', 'manufacturing_date', 'expiry_date')
-
-    def storage_location_id_from(self, data):
-        """A goods receipt is stored at its purchase order's storage location."""
-        if data.get('po_id') not in (None, ''):
-            try:
-                return PurchaseOrder.objects.filter(pk=data['po_id']).values_list('storage_location_id', flat=True).first()
-            except (TypeError, ValueError):
-                return None
-        return self.instance.po.storage_location_id if self.instance is not None else None
-
-    class Meta:
-        model = GoodsReceipt
-        exclude = ['po']
-        read_only_fields = ['received_by']
-        extra_kwargs = {
-            'item': {'required': False},
-            'received_quantity': {'required': False},
-        }
-
-
-# --- Donation --------------------------------------------------------------
-
-class DonationSerializer(OwnStorageLocationMixin, ShedNumberMixin, LocationScopedFieldsMixin, JSONDetailsMixin, serializers.ModelSerializer):
-    donor_name = name_field('donor.donor_name')
-    storage_location_name = name_field('storage_location.details')
-    location_name = name_field('storage_location.location.location_name')
-    item_name = name_field('item.item_name')
-    detail_fields = ('quantity', 'estimated_unit_value', 'batch_no', 'manufacturing_date', 'expiry_date')
-
-    class Meta:
-        model = Donation
-        fields = "__all__"
-        read_only_fields = ['created_by', 'created_at']
-        extra_kwargs = {
-            'item': {'required': False},
-            'quantity': {'required': False},
-        }

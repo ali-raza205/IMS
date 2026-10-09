@@ -1,12 +1,12 @@
 """
-Dashboard API: purchase order and donation records, totalled and filtered by expiry, item, category and storage location.
+Dashboard API: inventory transactions, totalled and filtered by type, expiry, item, category and storage location.
 Data is limited by role like the other APIs: storage location users only see their own storage location,
 master and all areas users see every storage location and can narrow it down with the filters.
 """
 import datetime
 
 from django.db.models import Case, CharField, Count, F, FloatField, Sum, Value, When
-from django.db.models.functions import Cast, Coalesce, TruncDate, TruncMonth
+from django.db.models.functions import Cast, Coalesce, TruncMonth
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from drf_yasg import openapi
@@ -15,7 +15,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Donation, PurchaseOrder
+from .models import InventoryTransaction, TransactionType
 from .permissions import limit_to_location, sees_all_locations
 from .serializers import user_info
 
@@ -24,32 +24,13 @@ DEFAULT_EXPIRING_DAYS = 30
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 500
 
-# Per source: the record's own columns behind the shared dashboard columns.
-SOURCES = {
-    'purchase_order': {
-        'model': PurchaseOrder,
-        'record_id': F('po_id'),
-        'record_no': F('po_number'),
-        'record_date': Coalesce('received_date', 'invoice_date', TruncDate('created_at')),
-        'party_name': F('supplier__supplier_name'),
-        'unit_value': F('unit_price'),
-        'batch': Value(None),
-    },
-    'donation': {
-        'model': Donation,
-        'record_id': F('donation_id'),
-        'record_no': F('donation_no'),
-        'record_date': Coalesce('received_date', 'donation_date'),
-        'party_name': F('donor__donor_name'),
-        'unit_value': F('estimated_unit_value'),
-        'batch': F('batch_no'),
-    },
-}
+DIRECTIONS = tuple(direction for direction, _ in TransactionType.DIRECTION_CHOICES)
 
-# Columns of a record row, in the same order for every source so they can be combined.
+# Columns of a record row.
 RECORD_FIELDS = (
-    'source', 'record_id', 'record_no', 'record_date', 'party_name',
+    'record_id', 'record_no', 'record_date', 'txn_type_id', 'txn_type_name', 'direction', 'party_name',
     'item_id', 'item_name', 'item_code', 'category_id', 'category_name',
+    'sub_cat_id', 'sub_cat_name', 'spec_id', 'spec_name', 'status_id', 'status_name',
     'st_loc_id', 'storage_location_name', 'location_id', 'location_name', 'shed_name',
     'quantity', 'unit_value', 'value', 'batch', 'manufacturing_date', 'expiry_date', 'expiry_status',
 )
@@ -96,9 +77,13 @@ def date_param(params, name):
 def dashboard_filters(params):
     """Validated filters from the query string."""
     return {
-        'source': choice_list(params, 'source', tuple(SOURCES)),
+        'txn_type': id_list(params, 'txn_type'),
+        'direction': choice_list(params, 'direction', DIRECTIONS),
         'category': id_list(params, 'category'),
         'item': id_list(params, 'item'),
+        'sub_category': id_list(params, 'sub_category'),
+        'spec': id_list(params, 'spec'),
+        'status': id_list(params, 'status'),
         'storage_location': id_list(params, 'storage_location'),
         'location': id_list(params, 'location'),
         'expiry_status': choice_list(params, 'expiry_status', EXPIRY_STATUSES),
@@ -110,28 +95,33 @@ def dashboard_filters(params):
     }
 
 
-def source_records(source, user, filters, today):
-    """One source's records (role scoped) with the shared dashboard columns and every filter applied."""
-    config = SOURCES[source]
+def filtered_records(user, filters, today):
+    """Transactions (role scoped) with the dashboard columns and every filter applied.
+    A transaction counts at its receiving storage location, or its sending one when it has none (dispatch)."""
     expiring_until = today + datetime.timedelta(days=filters['expiring_days'])
-    queryset = limit_to_location(config['model'].objects.all(), user).annotate(
-        source=Value(source, output_field=CharField()),
-        record_id=config['record_id'],
-        record_no=Cast(config['record_no'], CharField()),
-        record_date=config['record_date'],
-        party_name=Cast(config['party_name'], CharField()),
+    queryset = limit_to_location(InventoryTransaction.objects.all(), user).annotate(
+        record_id=F('txn_id'),
+        record_no=F('txn_no'),
+        record_date=F('txn_date'),
+        txn_type_name=F('txn_type__type_name'),
+        direction=F('txn_type__direction'),
+        party_name=Coalesce('supplier__supplier_name', 'donor__donor_name', 'issued_to', output_field=CharField()),
         item_name=F('item__item_name'),
         item_code=F('item__item_code'),
         category_id=F('item__item_category'),
         category_name=F('item__item_category__category_name'),
-        st_loc_id=F('storage_location'),
-        storage_location_name=F('storage_location__details'),
-        location_id=F('storage_location__location'),
-        location_name=F('storage_location__location__location_name'),
-        shed_name=F('sto_shed__shed__shed_name'),
-        batch=Cast(config['batch'], CharField()),
-        unit_value=Cast(config['unit_value'], FloatField()),
-        value=Cast(F('quantity'), FloatField()) * Cast(config['unit_value'], FloatField()),
+        sub_cat_name=F('sub_cat__sub_cat_name'),
+        spec_name=F('spec__spec_name'),
+        status_name=F('status__status_name'),
+        st_loc_id=Coalesce('to_storage_location', 'from_storage_location'),
+        storage_location_name=Coalesce('to_storage_location__details', 'from_storage_location__details'),
+        location_id=Coalesce('to_storage_location__location', 'from_storage_location__location'),
+        location_name=Coalesce('to_storage_location__location__location_name',
+                               'from_storage_location__location__location_name'),
+        shed_name=Coalesce('to_sto_shed__shed__shed_name', 'from_sto_shed__shed__shed_name'),
+        batch=F('batch_no'),
+        unit_value=Cast('unit_price', FloatField()),
+        value=Cast(F('quantity'), FloatField()) * Cast('unit_price', FloatField()),
         expiry_status=Case(
             When(expiry_date__isnull=True, then=Value('no_expiry')),
             When(expiry_date__lt=today, then=Value('expired')),
@@ -141,10 +131,15 @@ def source_records(source, user, filters, today):
         ),
     )
     lookups = {
+        'txn_type': 'txn_type__in',
+        'direction': 'direction__in',
         'category': 'item__item_category__in',
         'item': 'item__in',
-        'storage_location': 'storage_location__in',
-        'location': 'storage_location__location__in',
+        'sub_category': 'sub_cat__in',
+        'spec': 'spec__in',
+        'status': 'status__in',
+        'storage_location': 'st_loc_id__in',
+        'location': 'location_id__in',
         'expiry_status': 'expiry_status__in',
         'expiry_from': 'expiry_date__gte',
         'expiry_to': 'expiry_date__lte',
@@ -157,42 +152,27 @@ def source_records(source, user, filters, today):
     return queryset
 
 
-def filtered_records(user, filters, today):
-    """{source: queryset} for the chosen sources (all when no `source` filter is given)."""
-    return {source: source_records(source, user, filters, today) for source in filters['source'] or SOURCES}
+def totals(queryset, *group_by, **names):
+    """Quantity, value and number of records per group, largest quantity first."""
+    rows = queryset.values(*group_by, **names).annotate(
+        total_quantity=Coalesce(Sum('quantity'), 0, output_field=FloatField()),
+        total_value=Coalesce(Sum('value'), 0, output_field=FloatField()),
+        records=Count('pk'),
+    ).order_by('-total_quantity')
+    return list(rows)
 
 
-def totals(querysets, *group_by, **names):
-    """Quantity, value and number of records per group over all sources, largest quantity first."""
-    merged = {}
-    for queryset in querysets:
-        rows = queryset.values(*group_by, **names).annotate(
-            total_quantity=Sum('quantity'), total_value=Sum('value'), records=Count('pk'),
-        ).order_by()
-        for row in rows:
-            key = tuple(row[name] for name in (*group_by, *names))
-            if key not in merged:
-                merged[key] = {**row, 'total_quantity': 0, 'total_value': 0, 'records': 0}
-            merged[key]['total_quantity'] += row['total_quantity'] or 0
-            merged[key]['total_value'] += row['total_value'] or 0
-            merged[key]['records'] += row['records']
-    return sorted(merged.values(), key=lambda row: row['total_quantity'], reverse=True)
+def distinct_count(queryset, field):
+    return queryset.exclude(**{f'{field}__isnull': True}).values(field).distinct().count()
 
 
-def distinct_count(querysets, field):
-    values = set()
-    for queryset in querysets:
-        values.update(queryset.exclude(**{f'{field}__isnull': True}).values_list(field, flat=True).distinct())
-    return len(values)
-
-
-def records_page(querysets, page, page_size):
+def records_page(queryset, page, page_size):
     """The records themselves: soonest expiry first, records without expiry last, newest first within that."""
-    querysets = [queryset.values(*RECORD_FIELDS) for queryset in querysets]
-    combined = querysets[0].union(*querysets[1:], all=True) if len(querysets) > 1 else querysets[0]
-    combined = combined.order_by(F('expiry_date').asc(nulls_last=True), F('record_date').desc(nulls_last=True))
+    records = queryset.values(*RECORD_FIELDS).order_by(
+        F('expiry_date').asc(nulls_last=True), F('record_date').desc(nulls_last=True), F('record_id').desc(),
+    )
     start = (page - 1) * page_size
-    return list(combined[start:start + page_size])
+    return list(records[start:start + page_size])
 
 
 def param(name, type_, description, **kwargs):
@@ -201,14 +181,18 @@ def param(name, type_, description, **kwargs):
 
 class DashboardView(APIView):
     """
-    GET /api/dashboard/ returns purchase order and donation records with totals for dashboard cards and charts.
+    GET /api/dashboard/ returns inventory transactions with totals for dashboard cards and charts.
     Every filter is optional and filters can be combined; id filters take one id or comma-separated ids.
     """
 
     @swagger_auto_schema(manual_parameters=[
-        param('source', openapi.TYPE_STRING, 'purchase_order or donation (default both)'),
+        param('txn_type', openapi.TYPE_STRING, 'Transaction type id(s), e.g. 1 or 1,2 (default all)'),
+        param('direction', openapi.TYPE_STRING, 'in, out or transfer (comma-separated for several; default all)'),
         param('category', openapi.TYPE_STRING, 'Category id(s), e.g. 2 or 2,5'),
         param('item', openapi.TYPE_STRING, 'Item id(s)'),
+        param('sub_category', openapi.TYPE_STRING, 'Item sub category id(s)'),
+        param('spec', openapi.TYPE_STRING, 'Item spec id(s)'),
+        param('status', openapi.TYPE_STRING, 'Status id(s): 1 Serviceable, 2 Non Serviceable'),
         param('storage_location', openapi.TYPE_STRING,
               'Storage location (warehouse) id(s); location users only get their own'),
         param('location', openapi.TYPE_STRING, 'Area (district) id(s)'),
@@ -217,8 +201,8 @@ class DashboardView(APIView):
               f'Days ahead that count as "expiring" (default {DEFAULT_EXPIRING_DAYS})'),
         param('expiry_from', openapi.TYPE_STRING, 'Expiry date on or after (YYYY-MM-DD)', format=openapi.FORMAT_DATE),
         param('expiry_to', openapi.TYPE_STRING, 'Expiry date on or before (YYYY-MM-DD)', format=openapi.FORMAT_DATE),
-        param('date_from', openapi.TYPE_STRING, 'Received/record date on or after (YYYY-MM-DD)', format=openapi.FORMAT_DATE),
-        param('date_to', openapi.TYPE_STRING, 'Received/record date on or before (YYYY-MM-DD)', format=openapi.FORMAT_DATE),
+        param('date_from', openapi.TYPE_STRING, 'Transaction date on or after (YYYY-MM-DD)', format=openapi.FORMAT_DATE),
+        param('date_to', openapi.TYPE_STRING, 'Transaction date on or before (YYYY-MM-DD)', format=openapi.FORMAT_DATE),
         param('page', openapi.TYPE_INTEGER, 'Page of `records` (default 1)'),
         param('page_size', openapi.TYPE_INTEGER, f'Records per page (default {DEFAULT_PAGE_SIZE}, max {MAX_PAGE_SIZE})'),
     ])
@@ -229,9 +213,8 @@ class DashboardView(APIView):
         page_size = int_param(params, 'page_size', DEFAULT_PAGE_SIZE, 1, MAX_PAGE_SIZE)
         today = timezone.localdate()
         records = filtered_records(request.user, filters, today)
-        querysets = list(records.values())
 
-        by_expiry = {row['expiry_status']: row for row in totals(querysets, 'expiry_status')}
+        by_expiry = {row['expiry_status']: row for row in totals(records, 'expiry_status')}
         expiry = [
             by_expiry.get(status, {'expiry_status': status, 'total_quantity': 0, 'total_value': 0, 'records': 0})
             for status in EXPIRY_STATUSES
@@ -255,25 +238,27 @@ class DashboardView(APIView):
                 'records': record_count,
                 'total_quantity': sum(row['total_quantity'] for row in expiry),
                 'total_value': sum(row['total_value'] for row in expiry),
-                'items': distinct_count(querysets, 'item'),
-                'categories': distinct_count(querysets, 'category_id'),
-                'storage_locations': distinct_count(querysets, 'storage_location'),
+                'items': distinct_count(records, 'item'),
+                'categories': distinct_count(records, 'category_id'),
+                'storage_locations': distinct_count(records, 'st_loc_id'),
                 'expired_records': by_expiry.get('expired', {}).get('records', 0),
                 'expiring_records': by_expiry.get('expiring', {}).get('records', 0),
             },
             'expiry': expiry,
-            'by_source': totals(querysets, 'source'),
-            'by_category': totals(querysets, 'category_id', 'category_name'),
-            'by_storage_location': totals(querysets, 'st_loc_id', 'storage_location_name', 'location_name'),
-            'by_item': totals(querysets, 'item_id', 'item_name', 'item_code', 'category_name'),
+            'by_type': totals(records, 'txn_type_id', 'txn_type_name', 'direction'),
+            'by_status': totals(records, 'status_id', 'status_name'),
+            'by_category': totals(records, 'category_id', 'category_name'),
+            'by_storage_location': totals(records, 'st_loc_id', 'storage_location_name', 'location_name'),
+            'by_item': totals(records, 'item_id', 'item_name', 'item_code', 'category_name'),
+            'by_item_variant': totals(records, 'item_id', 'item_name', 'sub_cat_id', 'sub_cat_name', 'spec_id', 'spec_name'),
             'by_month': sorted(
-                totals(querysets, month=TruncMonth('record_date')),
+                totals(records, month=TruncMonth('record_date')),
                 key=lambda row: (row['month'] is None, row['month'] or datetime.date.min),
             ),
             'records': {
                 'count': record_count,
                 'page': page,
                 'page_size': page_size,
-                'results': records_page(querysets, page, page_size),
+                'results': records_page(records, page, page_size),
             },
         })

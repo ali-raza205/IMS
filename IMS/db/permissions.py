@@ -4,25 +4,24 @@ from django.utils import timezone
 from rest_framework import permissions
 from rest_framework.exceptions import PermissionDenied
 
-from .models import (
-    Donation,
-    GoodsReceipt,
-    PurchaseOrder,
-    Stock,
-    StorageLocation,
-    StorageShed,
-    UserProfile,
-)
+from .models import InventoryTransaction, StockBalance, StorageLocation, StorageShed, UserProfile
 
-# ORM path from each storage-location-bound model to its StorageLocation row.
+# ORM path(s) from each storage-location-bound model to its StorageLocation row.
+# A record with several paths belongs to each of those storage locations.
 LOCATION_LOOKUPS = {
-    StorageLocation: 'pk',
-    Donation: 'storage_location',
-    PurchaseOrder: 'storage_location',
-    GoodsReceipt: 'po__storage_location',
-    StorageShed: 'sto_loc',
-    Stock: 'location__sto_loc',
+    StorageLocation: ('pk',),
+    StorageShed: ('sto_loc',),
+    StockBalance: ('storage_location',),
+    InventoryTransaction: ('from_storage_location', 'to_storage_location'),
 }
+
+
+def location_q(model, location_id):
+    """Rows of `model` that belong to storage location `location_id`."""
+    q = Q()
+    for lookup in LOCATION_LOOKUPS[model]:
+        q |= Q(**{lookup: location_id})
+    return q
 
 
 def is_master(user):
@@ -49,13 +48,12 @@ def user_location_id(user):
 
 def limit_to_location(queryset, user):
     """Rows of a storage-location-bound model that belong to the user's storage location (all rows for master and all areas users)."""
-    lookup = LOCATION_LOOKUPS.get(queryset.model)
-    if lookup is None or sees_all_locations(user):
+    if queryset.model not in LOCATION_LOOKUPS or sees_all_locations(user):
         return queryset
     location_id = user_location_id(user)
     if location_id is None:
         return queryset.none()
-    return queryset.filter(**{lookup: location_id})
+    return queryset.filter(location_q(queryset.model, location_id))
 
 
 class IsMasterOrReadOnly(permissions.BasePermission):
@@ -77,15 +75,18 @@ class IsMasterOrCreateOnly(permissions.BasePermission):
 class LocationScopedFieldsMixin:
     """
     Serializer mixin: dropdown (related) fields only accept records of the user's storage location,
-    e.g. a goods receipt can only pick that storage location's purchase orders.
+    e.g. a transaction can only pick that storage location's sheds. `unscoped_fields` are left open.
     """
+    unscoped_fields = ()
 
     def get_fields(self):
         fields = super().get_fields()
         request = self.context.get('request')
         if request is None:
             return fields
-        for field in fields.values():
+        for name, field in fields.items():
+            if name in self.unscoped_fields:
+                continue
             field = getattr(field, 'child_relation', field)
             if getattr(field, 'queryset', None) is not None:
                 field.queryset = limit_to_location(field.queryset, request.user)
@@ -99,17 +100,15 @@ class LocationScopedFieldsMixin:
 class LocationScopedMixin:
     """
     Limits a viewset to the logged-in user's storage location; master and all areas users see everything.
-    The storage location path comes from LOCATION_LOOKUPS unless `location_lookup` is set.
+    The storage location paths come from LOCATION_LOOKUPS.
     Saves that would put a record outside the user's storage location are rolled back.
     `created_by_field` is filled with the logged-in user's id on create.
     """
-    location_lookup = None
     created_by_field = None
 
     def scope_filter(self, location_id):
         """Records the user may see."""
-        lookup = self.location_lookup or LOCATION_LOOKUPS[self.queryset.model]
-        return Q(**{lookup: location_id})
+        return location_q(self.queryset.model, location_id)
 
     def write_filter(self, location_id):
         """Records the user may create, edit or delete."""
@@ -139,14 +138,16 @@ class LocationScopedMixin:
     def _save_checked(self, serializer, **extra):
         # Save first so the storage location can be followed through related records, then undo if out of scope.
         with transaction.atomic():
-            instance = serializer.save(**extra)
-            self._check_writable(instance)
+            saved = serializer.save(**extra)
+            for instance in saved if isinstance(saved, list) else [saved]:
+                self._check_writable(instance)
 
     def perform_create(self, serializer):
         extra = {}
         if self.created_by_field:
             extra[self.created_by_field] = self.request.user.id
-            if hasattr(serializer.Meta.model, 'created_at'):
+            model = getattr(serializer, 'child', serializer).Meta.model  # a list of records has a child serializer
+            if hasattr(model, 'created_at'):
                 extra['created_at'] = timezone.now()
         self._save_checked(serializer, **extra)
 
