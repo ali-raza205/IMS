@@ -20,8 +20,10 @@ DATABASES = {
     }
 }
 
-# Folder for uploaded transaction pictures and receipts (default: IMS\media). Back it up with the database.
+# Folder for uploaded transaction pictures and receipts (default: IMS\media).
 # MEDIA_ROOT = r'D:\IMS_media'
+# Where backup_media.bat copies them every night; another disk or machine, outside MEDIA_ROOT.
+# MEDIA_BACKUP_DIR = r'E:\IMS_backups\media'
 
 # Address, port and worker threads serve.py uses.
 WAITRESS_HOST = '192.168.0.64'

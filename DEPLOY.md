@@ -19,7 +19,8 @@ Within 5 minutes the server pulls, installs requirements, runs migrations and re
 Check `IMS\update.log` on the server to see what happened.
 
 - **Never edit files on the server.** The update stops with "git pull failed" if it finds local changes.
-  The only server-side files are `IMS\IMS\local_settings.py`, `serve.pid` and `update.log`, which git ignores.
+  The only server-side files are `IMS\IMS\local_settings.py`, `serve.pid`, `update.log`, `backup_media.log`
+  and the `IMS\media` folder, which git ignores.
 - **Migrations run against the shared database on every update.** Test a migration before pushing it.
 - **To update right away**, run `IMS\update.bat` on the server.
 
@@ -52,6 +53,18 @@ Check `IMS\update.log` on the server to see what happened.
    ```
    Check it with `schtasks /query /tn "IMS auto update"`. To stop automatic updates:
    `schtasks /delete /tn "IMS auto update" /f`.
+
+8. Schedule the nightly backup of uploaded pictures and receipts. First set `MEDIA_BACKUP_DIR` in
+   `local_settings.py` to a folder on another disk or machine (and `MEDIA_ROOT` if the pictures are not in
+   `IMS\media`), then run `IMS\backup_media.bat` once by hand and check `IMS\backup_media.log`. Schedule it
+   as the account that runs the server (that account needs write access to the backup folder):
+   ```
+   schtasks /create /tn "IMS media backup" /sc daily /st 02:00 /tr "\"D:\API\Inventory_Management\IMS\backup_media.bat\""
+   ```
+   Each run copies only new and changed files and never deletes from the backup, so pictures replaced or
+   removed in the app can still be restored from it. To restore, copy files from the backup folder back into
+   `MEDIA_ROOT`. Check it with `schtasks /query /tn "IMS media backup"`; remove it with
+   `schtasks /delete /tn "IMS media backup" /f`.
 
 If the repository is private, sign in once on the server (`git fetch` in the folder opens the
 GitHub login) with an account that can read the repository, so the scheduled task can pull.
