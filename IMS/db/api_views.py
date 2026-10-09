@@ -1,7 +1,10 @@
 import json
 import logging
 
+import mimetypes
+
 from django.db import transaction
+from django.http import FileResponse, Http404
 from django.db.models import Count, F, Q, Sum
 from django.shortcuts import get_object_or_404
 from rest_framework import viewsets
@@ -55,6 +58,7 @@ from .serializers import (
     TransactionTypeSerializer,
     UnitsSerializer,
     check_stock,
+    delete_files,
     item_options,
     specs_for,
     stock_keys,
@@ -323,11 +327,47 @@ class InventoryTransactionViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.
             kwargs['many'] = True
         return super().get_serializer(*args, **kwargs)
 
+    def _save_with_images(self, save, serializer):
+        """Saves; uploaded images are removed if the save fails, replaced ones deleted once it is committed."""
+        child = getattr(serializer, 'child', serializer)
+        try:
+            with transaction.atomic():
+                save(serializer)
+                transaction.on_commit(lambda: delete_files(child.replaced_files))
+        except Exception:
+            delete_files(child.new_files)
+            raise
+
+    def perform_create(self, serializer):
+        self._save_with_images(super().perform_create, serializer)
+
+    def perform_update(self, serializer):
+        self._save_with_images(super().perform_update, serializer)
+
     def perform_destroy(self, instance):
         with transaction.atomic():
             keys = stock_keys(instance)
+            files = [instance.picture.name, instance.receipt.name]
             super().perform_destroy(instance)
             check_stock(keys)
+            transaction.on_commit(lambda: delete_files(files))
+
+    def _image(self, field):
+        image = getattr(self.get_object(), field)
+        if not image or not image.storage.exists(image.name):
+            raise Http404(f'This transaction has no {field}.')
+        content_type = mimetypes.guess_type(image.name)[0] or 'application/octet-stream'
+        return FileResponse(image.open('rb'), content_type=content_type)
+
+    @action(detail=True)
+    def picture(self, request, pk=None):
+        """The picture of the goods (needs a login, like the transaction itself)."""
+        return self._image('picture')
+
+    @action(detail=True)
+    def receipt(self, request, pk=None):
+        """The receipt image (needs a login, like the transaction itself)."""
+        return self._image('receipt')
 
 
 class StockViewSet(LocationScopedMixin, viewsets.ReadOnlyModelViewSet):

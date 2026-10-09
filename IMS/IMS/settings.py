@@ -172,6 +172,11 @@ STORAGES = {
     },
 }
 
+# Uploaded transaction pictures and receipts. Not public: they are sent by the API after a login check.
+# local_settings.py can set MEDIA_ROOT to another folder, e.g. a share every machine can reach.
+MEDIA_ROOT = BASE_DIR / 'media'
+MEDIA_URL = 'media/'
+
 # Submits (add/edit/delete) are printed to the server console before saving; see db/api_views.py LogSubmitMixin.
 # Set the 'db.submit' level to 'WARNING' to print only rejected submits.
 LOGGING = {

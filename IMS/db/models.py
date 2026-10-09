@@ -170,6 +170,8 @@ class InventoryTransaction(models.Model):
     manufacturing_date = models.DateField(blank=True, null=True)
     expiry_date = models.DateField(blank=True, null=True)
     remarks = models.TextField(blank=True, null=True)
+    picture = models.ImageField(upload_to='transactions/pictures/%Y/%m/', max_length=255, blank=True, null=True)
+    receipt = models.ImageField(upload_to='transactions/receipts/%Y/%m/', max_length=255, blank=True, null=True)
     created_by = models.BigIntegerField(blank=True, null=True)
     created_at = models.DateTimeField(blank=True, null=True)
 

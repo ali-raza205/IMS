@@ -11,6 +11,7 @@ IMS_venv/
 IMS/IMS/local_settings.py
 IMS/serve.pid
 IMS/update.log
+IMS/media/
 IMS/staticfiles/
 
 # Data files and deploy packages kept next to the project

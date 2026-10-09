@@ -1,5 +1,12 @@
+import io
+import logging
+from pathlib import PurePath
+
+from django.core.files.base import ContentFile
 from django.db import transaction
 from django.db.models import Q, Sum
+from django.http import QueryDict
+from PIL import Image, ImageOps
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
@@ -266,6 +273,55 @@ def item_options(item):
     }
 
 
+# --- Transaction images -----------------------------------------------------
+
+logger = logging.getLogger(__name__)
+
+IMAGE_FIELDS = ('picture', 'receipt')
+MAX_UPLOAD_MB = 15
+MAX_IMAGE_SIDE = 2000  # pixels; larger photos are scaled down
+JPEG_QUALITY = 85
+
+
+def shrink_image(upload):
+    """The uploaded photo as a JPEG of at most MAX_IMAGE_SIDE pixels a side, turned upright."""
+    if upload.size > MAX_UPLOAD_MB * 1024 * 1024:
+        raise serializers.ValidationError(f'Images can be at most {MAX_UPLOAD_MB} MB.')
+    upload.seek(0)
+    with Image.open(upload) as image:
+        image = ImageOps.exif_transpose(image)
+        image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE))
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        output = io.BytesIO()
+        image.save(output, 'JPEG', quality=JPEG_QUALITY, optimize=True)
+    return ContentFile(output.getvalue(), name=f'{PurePath(upload.name).stem[:80]}.jpg')
+
+
+def delete_files(names):
+    """
+    Removes stored image files; a missing file is fine. A file that can not be removed (e.g. Windows keeps it
+    while someone is downloading it) is logged and left behind rather than failing the save.
+    """
+    storage = InventoryTransaction._meta.get_field('picture').storage
+    for name in names:
+        if name:
+            try:
+                storage.delete(name)
+            except OSError as error:
+                logger.warning('Could not delete %s: %s', name, error)
+
+
+def editable_copy(data):
+    """A copy of request data that can be changed; uploaded files are shared, not copied."""
+    if isinstance(data, QueryDict):
+        copy = QueryDict(mutable=True)
+        for key, values in data.lists():
+            copy.setlist(key, values)
+        return copy
+    return dict(data)
+
+
 # --- Inventory transactions -------------------------------------------------
 
 SIDES = ('from', 'to')
@@ -347,6 +403,8 @@ class InventoryTransactionSerializer(LocationScopedFieldsMixin, serializers.Mode
     has any. New Dispatch lines need `issued_to`.
     `sub_cat` and `spec` must belong to the item; new lines must pick them when the item has any.
     No save may leave less than nothing in stock.
+    `picture` (the goods) and `receipt` are image uploads (multipart/form-data; send an empty value to remove one).
+    They are stored as JPEG and come back as URLs of /api/transactions/<id>/picture/ and /receipt/, which need a login.
     """
     txn_type_name = name_field('txn_type.type_name')
     direction = name_field('txn_type.direction')
@@ -371,6 +429,28 @@ class InventoryTransactionSerializer(LocationScopedFieldsMixin, serializers.Mode
         read_only_fields = ['created_by', 'created_at']
         list_serializer_class = InventoryTransactionListSerializer
         extra_kwargs = {'status': {'required': False}}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.new_files = []  # stored by this save; removed again when the save is rolled back
+        self.replaced_files = []  # replaced or removed by this save; deleted once it is committed
+
+    def validate_picture(self, value):
+        return shrink_image(value) if value else value
+
+    def validate_receipt(self, value):
+        return shrink_image(value) if value else value
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get('request')
+        for field in IMAGE_FIELDS:
+            if getattr(instance, field):
+                url = f'/api/transactions/{instance.pk}/{field}/'
+                data[field] = request.build_absolute_uri(url) if request is not None else url
+            else:
+                data[field] = None
+        return data
 
     def own_location_id(self):
         """The storage location user's own storage location; None for master and all areas users."""
@@ -397,7 +477,7 @@ class InventoryTransactionSerializer(LocationScopedFieldsMixin, serializers.Mode
                     if location_id is not None and not sheds.filter(pk=value).exists():
                         match = sheds.filter(shed_id=value).values_list('pk', flat=True).first()
                         if match is not None:
-                            data = data.copy()
+                            data = editable_copy(data)
                             data[shed_name] = match
                 except (TypeError, ValueError):
                     pass  # not a number; the field reports it
@@ -459,12 +539,19 @@ class InventoryTransactionSerializer(LocationScopedFieldsMixin, serializers.Mode
 
     def create(self, validated_data):
         txn = super().create(validated_data)
+        self.new_files += [getattr(txn, field).name for field in IMAGE_FIELDS if validated_data.get(field)]
         check_stock(stock_keys(txn))
         return txn
 
     def update(self, instance, validated_data):
         before = stock_keys(instance)
+        old_files = {field: getattr(instance, field).name for field in IMAGE_FIELDS}
         txn = super().update(instance, validated_data)
+        for field in IMAGE_FIELDS:
+            if field in validated_data:
+                if validated_data[field]:
+                    self.new_files.append(getattr(txn, field).name)
+                self.replaced_files.append(old_files[field])
         check_stock(before | stock_keys(txn))
         return txn
 
