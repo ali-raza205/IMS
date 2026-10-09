@@ -4,7 +4,6 @@ from rest_framework_simplejwt.views import TokenRefreshView
 
 from .api_views import (
     CategoriesViewSet,
-    DonorsViewSet,
     InventoryTransactionViewSet,
     ItemSpecViewSet,
     ItemStatusViewSet,
@@ -13,12 +12,12 @@ from .api_views import (
     LocationsViewSet,
     LoginView,
     MeView,
+    PartyViewSet,
     ShedViewSet,
     StockViewSet,
     StorageLocationViewSet,
     StorageShedViewSet,
     StorageTypeViewSet,
-    SuppliersViewSet,
     TotalInventoryViewSet,
     TransactionTypeViewSet,
     UnitsViewSet,
@@ -29,16 +28,15 @@ from .dashboard import DashboardView
 router = DefaultRouter()
 
 router.register(r'categories', CategoriesViewSet)
-router.register(r'donors', DonorsViewSet)
 router.register(r'item-status', ItemStatusViewSet)
 router.register(r'items', ItemsViewSet)
 router.register(r'item-sub-category', ItemSubCategoryViewSet)
 router.register(r'item-spec', ItemSpecViewSet)
 router.register(r'transaction-type', TransactionTypeViewSet)
+router.register(r'parties', PartyViewSet)
 router.register(r'transactions', InventoryTransactionViewSet)
 router.register(r'locations', LocationsViewSet)
 router.register(r'shed', ShedViewSet)
-router.register(r'suppliers', SuppliersViewSet)
 router.register(r'units', UnitsViewSet)
 router.register(r'storage-type', StorageTypeViewSet)
 router.register(r'storage-location', StorageLocationViewSet)

@@ -5,19 +5,18 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from .models import (
     Categories,
-    Donors,
     InventoryTransaction,
     ItemSpec,
     ItemStatus,
     ItemSubCategory,
     Items,
     Locations,
+    Party,
     Shed,
     StockBalance,
     StorageLocation,
     StorageShed,
     StorageType,
-    Suppliers,
     TransactionType,
     Units,
     UserProfile,
@@ -66,12 +65,6 @@ class CategoriesSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
-class DonorsSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Donors
-        fields = "__all__"
-
-
 class LocationsSerializer(serializers.ModelSerializer):
     class Meta:
         model = Locations
@@ -96,12 +89,6 @@ class ItemStatusSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
-class SuppliersSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Suppliers
-        fields = "__all__"
-
-
 class UnitsSerializer(serializers.ModelSerializer):
     class Meta:
         model = Units
@@ -112,6 +99,23 @@ class TransactionTypeSerializer(serializers.ModelSerializer):
     class Meta:
         model = TransactionType
         fields = "__all__"
+
+
+class PartySerializer(serializers.ModelSerializer):
+    """A supplier, donor or NDMA, under the transaction type it belongs to."""
+    txn_type_name = name_field('txn_type.type_name')
+
+    class Meta:
+        model = Party
+        fields = "__all__"
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        txn_type = attrs.get('txn_type', getattr(self.instance, 'txn_type', None))
+        name = attrs['party_name'] = clean_name(attrs.get('party_name', getattr(self.instance, 'party_name', '')))
+        if name_taken(self, Party.objects.filter(txn_type=txn_type), 'party_name', name):
+            raise serializers.ValidationError({'party_name': f'{txn_type.type_name} already has this party.'})
+        return attrs
 
 
 def clean_name(value):
@@ -267,6 +271,7 @@ def item_options(item):
 SIDES = ('from', 'to')
 
 
+
 def side_fields(side):
     """The storage location and shed fields of the sending ('from') or receiving ('to') side."""
     return f'{side}_storage_location', f'{side}_sto_shed'
@@ -338,6 +343,8 @@ class InventoryTransactionSerializer(LocationScopedFieldsMixin, serializers.Mode
     Incoming types need `to_storage_location`, Dispatch needs `from_storage_location`, Internal Transfer both.
     Storage location users may leave out their own side (the receiving side of incoming lines, else the sending one).
     A shed may be given instead of its storage location, as a storage shed id or as the shed number there.
+    `party` (supplier, donor, NDMA) must be a party of the transaction type; new lines must pick one when the type
+    has any. New Dispatch lines need `issued_to`.
     `sub_cat` and `spec` must belong to the item; new lines must pick them when the item has any.
     No save may leave less than nothing in stock.
     """
@@ -353,8 +360,7 @@ class InventoryTransactionSerializer(LocationScopedFieldsMixin, serializers.Mode
     from_shed_name = name_field('from_sto_shed.shed.shed_name')
     to_storage_location_name = name_field('to_storage_location.details')
     to_shed_name = name_field('to_sto_shed.shed.shed_name')
-    supplier_name = name_field('supplier.supplier_name')
-    donor_name = name_field('donor.donor_name')
+    party_name = name_field('party.party_name')
 
     # A transfer goes to another storage location, so the receiving side is not limited to the user's own.
     unscoped_fields = ('to_storage_location', 'to_sto_shed')
@@ -425,6 +431,17 @@ class InventoryTransactionSerializer(LocationScopedFieldsMixin, serializers.Mode
         if len(used) == 2 and value('from_storage_location') is not None \
                 and value('from_storage_location') == value('to_storage_location'):
             errors['to_storage_location'] = 'Must be a different storage location.'
+
+        # The supplier, donor or NDMA must be one of the transaction type's parties; new lines must pick one
+        # when the type has any. A dispatch records who received it.
+        party = value('party')
+        if party is not None and party.txn_type_id != txn_type.pk:
+            errors['party'] = f'Not a party of {txn_type.type_name}.'
+        if instance is None:
+            if party is None and txn_type.parties.filter(is_active=True).exists():
+                errors['party'] = f'Choose the {txn_type.type_name} party.'
+            if txn_type.pk == TransactionType.DISPATCH and not value('issued_to'):
+                errors['issued_to'] = 'Required for Dispatch.'
 
         item, sub_cat, spec = value('item'), value('sub_cat'), value('spec')
         if sub_cat is not None and sub_cat.item_id != item.pk:

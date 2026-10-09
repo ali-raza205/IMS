@@ -13,19 +13,18 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import (
     Categories,
-    Donors,
     InventoryTransaction,
     ItemSpec,
     ItemStatus,
     ItemSubCategory,
     Items,
     Locations,
+    Party,
     Shed,
     StockBalance,
     StorageLocation,
     StorageShed,
     StorageType,
-    Suppliers,
     TransactionType,
     Units,
 )
@@ -39,7 +38,6 @@ from .permissions import (
 )
 from .serializers import (
     CategoriesSerializer,
-    DonorsSerializer,
     InventoryTransactionSerializer,
     ItemSpecSerializer,
     ItemStatusSerializer,
@@ -47,12 +45,12 @@ from .serializers import (
     ItemsSerializer,
     LocationsSerializer,
     LoginSerializer,
+    PartySerializer,
     ShedSerializer,
     StockBalanceSerializer,
     StorageTypeSerializer,
     StorageLocationSerializer,
     StorageShedSerializer,
-    SuppliersSerializer,
     TotalInventorySerializer,
     TransactionTypeSerializer,
     UnitsSerializer,
@@ -110,16 +108,6 @@ class MasterDataViewSet(LogSubmitMixin, viewsets.ModelViewSet):
 class CategoriesViewSet(MasterDataViewSet):
     queryset = Categories.objects.all()
     serializer_class = CategoriesSerializer
-
-
-class DonorsViewSet(MasterDataViewSet):
-    queryset = Donors.objects.all()
-    serializer_class = DonorsSerializer
-
-
-class SuppliersViewSet(MasterDataViewSet):
-    queryset = Suppliers.objects.all()
-    serializer_class = SuppliersSerializer
 
 
 class UnitsViewSet(MasterDataViewSet):
@@ -253,6 +241,24 @@ class StorageLocationViewSet(LogSubmitMixin, viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsMasterOrReadOnly]
 
 
+class PartyViewSet(MasterDataViewSet):
+    """
+    Suppliers, donors and NDMA in one list, each under its transaction type.
+    GET /api/parties/?txn_type=<id> lists the parties to choose from for that transaction type.
+    """
+    queryset = Party.objects.select_related('txn_type').order_by('party_name')
+    serializer_class = PartySerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        txn_type_id = id_param(self.request, 'txn_type')
+        if txn_type_id is not None:
+            queryset = queryset.filter(txn_type_id=txn_type_id)
+        if self.action == 'list' and self.request.query_params.get('include_inactive') != 'true':
+            queryset = queryset.filter(is_active=True)
+        return queryset
+
+
 # --- Storage location data: location users only see and change their own storage location ---
 
 class StorageShedViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.ModelViewSet):
@@ -282,11 +288,11 @@ class InventoryTransactionViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.
     All incoming and outgoing stock movements. POST one line, or a list of lines that are saved together.
     Both the sending and the receiving storage location see a transaction; a storage location user changes only
     lines sent from their storage location, or received there from outside (donation, procurement, NDMA...).
-    Filters: ?txn_type, ?direction (in/out/transfer), ?item, ?sub_category, ?spec, ?status, ?storage_location,
+    Filters: ?txn_type, ?direction (in/out/transfer), ?party, ?item, ?sub_category, ?spec, ?status, ?storage_location,
     ?date_from and ?date_to (YYYY-MM-DD).
     """
     queryset = InventoryTransaction.objects.select_related(
-        'txn_type', 'item__item_category', 'item__unit', 'sub_cat', 'spec', 'status', 'supplier', 'donor',
+        'txn_type', 'item__item_category', 'item__unit', 'sub_cat', 'spec', 'status', 'party',
         'from_storage_location', 'from_sto_shed__shed', 'to_storage_location', 'to_sto_shed__shed',
     ).order_by('-txn_date', '-txn_id')
     serializer_class = InventoryTransactionSerializer
@@ -297,7 +303,8 @@ class InventoryTransactionViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.
 
     def get_queryset(self):
         queryset = filter_by_params(super().get_queryset(), self.request, {
-            'txn_type': 'txn_type', 'item': 'item', 'sub_category': 'sub_cat', 'spec': 'spec', 'status': 'status',
+            'txn_type': 'txn_type', 'party': 'party', 'item': 'item', 'sub_category': 'sub_cat', 'spec': 'spec',
+            'status': 'status',
         })
         params = self.request.query_params
         if params.get('direction'):

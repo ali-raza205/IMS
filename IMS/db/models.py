@@ -20,23 +20,6 @@ class Categories(models.Model):
         db_table = 'categories'
 
 
-
-class Donors(models.Model):
-    donor_id = models.BigAutoField(primary_key=True)
-    donor_name = models.CharField(max_length=200)
-    donor_type = models.CharField(max_length=50, blank=True, null=True)
-    contact_person = models.CharField(max_length=100, blank=True, null=True)
-    phone = models.CharField(max_length=50, blank=True, null=True)
-    email = models.CharField(max_length=100, blank=True, null=True)
-    address = models.TextField(blank=True, null=True)
-    active = models.BooleanField(blank=True, null=True)
-
-    class Meta:
-        managed = False
-        db_table = 'donors'
-
-
-
 class ItemStatus(models.Model):
     """Serviceable (1) or Non Serviceable (2)."""
     SERVICEABLE = 1
@@ -108,6 +91,14 @@ class TransactionType(models.Model):
     TRANSFER = 'transfer'
     DIRECTION_CHOICES = [(IN, 'Incoming'), (OUT, 'Outgoing'), (TRANSFER, 'Transfer')]
 
+    # type_id of the rows added by migration 0008
+    DONATION = 1
+    PROCUREMENT = 2
+    NDMA = 3
+    DISPATCH = 4
+    INTERNAL_TRANSFER = 5
+    OPENING_STOCK = 6
+
     type_id = models.BigAutoField(primary_key=True)
     type_name = models.CharField(unique=True, max_length=50)
     direction = models.CharField(max_length=10, choices=DIRECTION_CHOICES)
@@ -118,6 +109,30 @@ class TransactionType(models.Model):
 
     def __str__(self):
         return self.type_name
+
+
+class Party(models.Model):
+    """
+    Who stock comes from (or goes to) outside the storage locations, under the transaction type it belongs to:
+    suppliers under Procurement, donors under Donation, NDMA under NDMA.
+    """
+    party_id = models.BigAutoField(primary_key=True)
+    party_name = models.TextField()
+    txn_type = models.ForeignKey(TransactionType, models.DO_NOTHING, related_name='parties')
+    contact_person = models.TextField(blank=True, null=True)
+    phone = models.TextField(blank=True, null=True)
+    email = models.TextField(blank=True, null=True)
+    address = models.TextField(blank=True, null=True)
+    ntn = models.TextField(blank=True, null=True)
+    gst = models.TextField(blank=True, null=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        managed = False
+        db_table = 'party'
+
+    def __str__(self):
+        return self.party_name
 
 
 class InventoryTransaction(models.Model):
@@ -147,8 +162,7 @@ class InventoryTransaction(models.Model):
     to_sto_shed = models.ForeignKey(
         'StorageShed', models.DO_NOTHING, blank=True, null=True, related_name='incoming_transactions'
     )
-    supplier = models.ForeignKey('Suppliers', models.DO_NOTHING, blank=True, null=True)
-    donor = models.ForeignKey(Donors, models.DO_NOTHING, blank=True, null=True)
+    party = models.ForeignKey('Party', models.DO_NOTHING, blank=True, null=True)
     issued_to = models.TextField(blank=True, null=True)
     invoice_no = models.CharField(max_length=100, blank=True, null=True)
     invoice_date = models.DateField(blank=True, null=True)
@@ -195,7 +209,6 @@ class Locations(models.Model):
         return self.location_name or f'Location {self.location_id}'
 
 
-
 class Shed(models.Model):
     shed_id = models.BigAutoField(primary_key=True)
     shed_name = models.TextField()
@@ -203,8 +216,6 @@ class Shed(models.Model):
     class Meta:
         managed = False
         db_table = 'shed'
-
-
 
 
 class StorageLocation(models.Model):
@@ -243,22 +254,6 @@ class StorageType(models.Model):
     class Meta:
         managed = False
         db_table = 'storage_type'
-
-
-class Suppliers(models.Model):
-    supplier_id = models.BigAutoField(primary_key=True)
-    supplier_name = models.CharField(max_length=200)
-    contact_person = models.CharField(max_length=100, blank=True, null=True)
-    phone = models.CharField(max_length=50, blank=True, null=True)
-    email = models.CharField(max_length=100, blank=True, null=True)
-    address = models.TextField(blank=True, null=True)
-    ntn = models.CharField(max_length=50, blank=True, null=True)
-    gst = models.CharField(max_length=50, blank=True, null=True)
-    active = models.BooleanField(blank=True, null=True)
-
-    class Meta:
-        managed = False
-        db_table = 'suppliers'
 
 
 class Units(models.Model):

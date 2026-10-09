@@ -78,6 +78,7 @@ def dashboard_filters(params):
     """Validated filters from the query string."""
     return {
         'txn_type': id_list(params, 'txn_type'),
+        'party': id_list(params, 'party'),
         'direction': choice_list(params, 'direction', DIRECTIONS),
         'category': id_list(params, 'category'),
         'item': id_list(params, 'item'),
@@ -105,7 +106,7 @@ def filtered_records(user, filters, today):
         record_date=F('txn_date'),
         txn_type_name=F('txn_type__type_name'),
         direction=F('txn_type__direction'),
-        party_name=Coalesce('supplier__supplier_name', 'donor__donor_name', 'issued_to', output_field=CharField()),
+        party_name=Coalesce('party__party_name', 'issued_to', output_field=CharField()),
         item_name=F('item__item_name'),
         item_code=F('item__item_code'),
         category_id=F('item__item_category'),
@@ -132,6 +133,7 @@ def filtered_records(user, filters, today):
     )
     lookups = {
         'txn_type': 'txn_type__in',
+        'party': 'party__in',
         'direction': 'direction__in',
         'category': 'item__item_category__in',
         'item': 'item__in',
@@ -187,6 +189,7 @@ class DashboardView(APIView):
 
     @swagger_auto_schema(manual_parameters=[
         param('txn_type', openapi.TYPE_STRING, 'Transaction type id(s), e.g. 1 or 1,2 (default all)'),
+        param('party', openapi.TYPE_STRING, 'Supplier / donor / NDMA party id(s)'),
         param('direction', openapi.TYPE_STRING, 'in, out or transfer (comma-separated for several; default all)'),
         param('category', openapi.TYPE_STRING, 'Category id(s), e.g. 2 or 2,5'),
         param('item', openapi.TYPE_STRING, 'Item id(s)'),
@@ -247,6 +250,7 @@ class DashboardView(APIView):
             'expiry': expiry,
             'by_type': totals(records, 'txn_type_id', 'txn_type_name', 'direction'),
             'by_status': totals(records, 'status_id', 'status_name'),
+            'by_party': totals(records, 'party_id', 'party_name'),
             'by_category': totals(records, 'category_id', 'category_name'),
             'by_storage_location': totals(records, 'st_loc_id', 'storage_location_name', 'location_name'),
             'by_item': totals(records, 'item_id', 'item_name', 'item_code', 'category_name'),
