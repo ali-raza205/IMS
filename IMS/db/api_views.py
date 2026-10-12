@@ -138,7 +138,9 @@ def storage_location_param(request):
 class ItemsViewSet(MasterDataViewSet):
     """
     GET /api/items/?item_category=<id> filters by category; POST accepts the same param to set it.
-    GET /api/items/<id>/options/ returns the item's sub categories with their specs, for the item form dropdowns.
+    GET /api/items/<id>/sub-categories/ lists the item's sub categories.
+    GET /api/items/<id>/specs/ lists all the item's specs; add ?sub_category=<id> for that sub category's choices.
+    GET /api/items/<id>/options/ returns both at once: the sub categories with their specs, for the form dropdowns.
     """
     queryset = Items.objects.select_related('item_category', 'unit').order_by('item_name')
     serializer_class = ItemsSerializer
@@ -161,6 +163,19 @@ class ItemsViewSet(MasterDataViewSet):
     def options(self, request, pk=None):
         return Response(item_options(self.get_object()))
 
+    @action(detail=True, url_path='sub-categories')
+    def sub_categories(self, request, pk=None):
+        item = self.get_object()
+        sub_categories = active_only(item.sub_categories.select_related('item').order_by('sub_cat_name'), request)
+        return Response(ItemSubCategorySerializer(sub_categories, many=True).data)
+
+    @action(detail=True)
+    def specs(self, request, pk=None):
+        item = self.get_object()
+        specs = ItemSpec.objects.select_related('item', 'sub_cat').order_by('sub_cat__sub_cat_name', 'spec_name')
+        specs = active_only(filter_specs(specs, item.pk, id_param(request, 'sub_category')), request)
+        return Response(ItemSpecSerializer(specs, many=True).data)
+
 
 class ItemSubCategoryViewSet(MasterDataViewSet):
     """GET /api/item-sub-category/?item=<id> lists the sub categories of an item."""
@@ -172,27 +187,44 @@ class ItemSubCategoryViewSet(MasterDataViewSet):
         item_id = id_param(self.request, 'item')
         if item_id is not None:
             queryset = queryset.filter(item_id=item_id)
-        if self.action == 'list' and self.request.query_params.get('include_inactive') != 'true':
-            queryset = queryset.filter(is_active=True)
+        return active_only(queryset, self.request) if self.action == 'list' else queryset
+
+
+def filter_specs(queryset, item_id=None, sub_cat_id=None):
+    """
+    Specs of an item: all of them (each with its sub category), or with a sub category only the ones to choose
+    from for it, i.e. that sub category's own specs plus those of the whole item.
+    """
+    if sub_cat_id is not None:
+        sub_cat = ItemSubCategory.objects.filter(pk=sub_cat_id).values_list('item_id', flat=True).first()
+        if sub_cat is None or (item_id is not None and sub_cat != item_id):
+            return queryset.none()
+        return queryset.filter(pk__in=specs_for(sub_cat, sub_cat_id))
+    if item_id is not None:
+        return queryset.filter(item_id=item_id)
+    return queryset
+
+
+def active_only(queryset, request):
+    """Inactive rows are left out of lists unless `?include_inactive=true`."""
+    if request.query_params.get('include_inactive') == 'true':
         return queryset
+    return queryset.filter(is_active=True)
 
 
 class ItemSpecViewSet(MasterDataViewSet):
     """
-    GET /api/item-spec/?item=<id>&sub_category=<id> lists the specs to choose from for that item and sub category:
-    the sub category's own specs plus those of the whole item. Without `sub_category` only the whole item's specs.
+    GET /api/item-spec/?item=<id> lists all specs of an item, each with its sub category.
+    GET /api/item-spec/?item=<id>&sub_category=<id> (or only ?sub_category=<id>) lists the specs to choose from
+    for that sub category: its own specs plus those of the whole item.
     """
-    queryset = ItemSpec.objects.select_related('item', 'sub_cat').order_by('spec_name')
+    queryset = ItemSpec.objects.select_related('item', 'sub_cat').order_by('sub_cat__sub_cat_name', 'spec_name')
     serializer_class = ItemSpecSerializer
 
     def get_queryset(self):
-        queryset = super().get_queryset()
-        item_id = id_param(self.request, 'item')
-        if item_id is not None:
-            queryset = queryset.filter(pk__in=specs_for(item_id, id_param(self.request, 'sub_category')))
-        if self.action == 'list' and self.request.query_params.get('include_inactive') != 'true':
-            queryset = queryset.filter(is_active=True)
-        return queryset
+        queryset = filter_specs(super().get_queryset(), id_param(self.request, 'item'),
+                                id_param(self.request, 'sub_category'))
+        return active_only(queryset, self.request) if self.action == 'list' else queryset
 
 
 class TransactionTypeViewSet(LogSubmitMixin, viewsets.ModelViewSet):
@@ -258,9 +290,7 @@ class PartyViewSet(MasterDataViewSet):
         txn_type_id = id_param(self.request, 'txn_type')
         if txn_type_id is not None:
             queryset = queryset.filter(txn_type_id=txn_type_id)
-        if self.action == 'list' and self.request.query_params.get('include_inactive') != 'true':
-            queryset = queryset.filter(is_active=True)
-        return queryset
+        return active_only(queryset, self.request) if self.action == 'list' else queryset
 
 
 # --- Storage location data: location users only see and change their own storage location ---
