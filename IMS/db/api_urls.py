@@ -23,6 +23,7 @@ from .api_views import (
     UnitsViewSet,
 )
 from .dashboard import DashboardView
+from .demands import DemandLineViewSet, DemandViewSet
 
 
 router = DefaultRouter()
@@ -35,6 +36,8 @@ router.register(r'item-spec', ItemSpecViewSet)
 router.register(r'transaction-type', TransactionTypeViewSet)
 router.register(r'parties', PartyViewSet)
 router.register(r'transactions', InventoryTransactionViewSet)
+router.register(r'demands', DemandViewSet)
+router.register(r'demand-lines', DemandLineViewSet)
 router.register(r'locations', LocationsViewSet)
 router.register(r'shed', ShedViewSet)
 router.register(r'units', UnitsViewSet)

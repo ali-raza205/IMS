@@ -170,6 +170,9 @@ class InventoryTransaction(models.Model):
     manufacturing_date = models.DateField(blank=True, null=True)
     expiry_date = models.DateField(blank=True, null=True)
     remarks = models.TextField(blank=True, null=True)
+    demand_allocation = models.ForeignKey(
+        'DemandAllocation', models.DO_NOTHING, blank=True, null=True, related_name='transactions'
+    )
     picture = models.ImageField(upload_to='transactions/pictures/%Y/%m/', max_length=255, blank=True, null=True)
     receipt = models.ImageField(upload_to='transactions/receipts/%Y/%m/', max_length=255, blank=True, null=True)
     created_by = models.BigIntegerField(blank=True, null=True)
@@ -178,6 +181,67 @@ class InventoryTransaction(models.Model):
     class Meta:
         managed = False
         db_table = 'inventory_transaction'
+
+
+class Demand(models.Model):
+    """A request for items for a storage location; each item is a DemandLine."""
+    demand_id = models.BigAutoField(primary_key=True)
+    demand_no = models.CharField(unique=True, max_length=30, blank=True, null=True)
+    demand_date = models.DateField()
+    for_storage_location = models.ForeignKey('StorageLocation', models.DO_NOTHING, related_name='demands')
+    purpose = models.TextField(blank=True, null=True)
+    needed_by = models.DateField(blank=True, null=True)
+    remarks = models.TextField(blank=True, null=True)
+    created_by = models.BigIntegerField(blank=True, null=True)
+    created_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'demand'
+
+
+class DemandLine(models.Model):
+    """
+    One item of a demand. The PDMA Admin refers it to a storage location (`referred_to`) and approves or rejects it;
+    an approval is one or more DemandAllocations, possibly less than requested (rationalized).
+    """
+    PENDING = 'pending'
+    APPROVED = 'approved'
+    REJECTED = 'rejected'
+    STATUS_CHOICES = [(PENDING, 'Pending'), (APPROVED, 'Approved'), (REJECTED, 'Rejected')]
+
+    line_id = models.BigAutoField(primary_key=True)
+    demand = models.ForeignKey(Demand, models.CASCADE, related_name='lines')
+    item = models.ForeignKey(Items, models.DO_NOTHING)
+    sub_cat = models.ForeignKey(ItemSubCategory, models.DO_NOTHING, blank=True, null=True)
+    spec = models.ForeignKey(ItemSpec, models.DO_NOTHING, blank=True, null=True)
+    quantity = models.DecimalField(max_digits=15, decimal_places=2)
+    remarks = models.TextField(blank=True, null=True)
+    referred_to = models.ForeignKey(
+        'StorageLocation', models.DO_NOTHING, blank=True, null=True, related_name='referred_demand_lines'
+    )
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=PENDING)
+    decision_remarks = models.TextField(blank=True, null=True)
+    decided_by = models.BigIntegerField(blank=True, null=True)
+    decided_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'demand_line'
+
+
+class DemandAllocation(models.Model):
+    """Approved quantity of a demand line from one storage location; issued as transactions linked to it."""
+    allocation_id = models.BigAutoField(primary_key=True)
+    line = models.ForeignKey(DemandLine, models.CASCADE, related_name='allocations')
+    from_storage_location = models.ForeignKey('StorageLocation', models.DO_NOTHING, related_name='demand_allocations')
+    quantity = models.DecimalField(max_digits=15, decimal_places=2)
+    approved_by = models.BigIntegerField(blank=True, null=True)
+    approved_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'demand_allocation'
 
 
 class StockBalance(models.Model):
@@ -273,14 +337,18 @@ class UserProfile(models.Model):
     Ties a login to a storage location. Master users (and superusers) see every storage location.
     All areas users work on records of every storage location but, unlike master users,
     cannot edit or delete shared lookup data or change areas and storage locations.
+    Storage location approvers are storage location users who may also approve or reject demand lines
+    referred to their storage location, from its own stock. Master users (PDMA Admin) approve any demand.
     """
     ROLE_MASTER = 'master'
     ROLE_ALL_AREAS = 'all_areas'
     ROLE_LOCATION = 'location'
+    ROLE_APPROVER = 'location_approver'
     ROLE_CHOICES = [
         (ROLE_MASTER, 'Master'),
         (ROLE_ALL_AREAS, 'All areas user'),
         (ROLE_LOCATION, 'Storage location user'),
+        (ROLE_APPROVER, 'Storage location approver'),
     ]
 
     user = models.OneToOneField(settings.AUTH_USER_MODEL, models.CASCADE, related_name='profile')
@@ -297,5 +365,5 @@ class UserProfile(models.Model):
 
     def clean(self):
         # Without a storage location a non-master user sees no records at all.
-        if self.role == self.ROLE_LOCATION and self.storage_location_id is None:
+        if self.role in (self.ROLE_LOCATION, self.ROLE_APPROVER) and self.storage_location_id is None:
             raise ValidationError({'storage_location': 'Storage location users need a storage location.'})

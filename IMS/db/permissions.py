@@ -40,6 +40,19 @@ def sees_all_locations(user):
     return profile is not None and profile.role == UserProfile.ROLE_ALL_AREAS
 
 
+def is_approver(user):
+    """Storage location approvers approve demand lines referred to their own storage location."""
+    profile = getattr(user, 'profile', None)
+    return profile is not None and profile.role == UserProfile.ROLE_APPROVER
+
+
+def can_decide_demand_line(user, line):
+    """Master users (PDMA Admin) decide every demand line; approvers those referred to their storage location."""
+    if is_master(user):
+        return True
+    return is_approver(user) and line.referred_to_id is not None and line.referred_to_id == user_location_id(user)
+
+
 def user_location_id(user):
     """The user's storage location id (st_loc_id)."""
     profile = getattr(user, 'profile', None)

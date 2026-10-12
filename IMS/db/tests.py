@@ -8,7 +8,8 @@ from rest_framework.exceptions import ValidationError as APIValidationError
 
 from .dashboard import dashboard_filters, filtered_records
 from .models import InventoryTransaction, Locations, StockBalance, StorageLocation, TransactionType, UserProfile
-from .permissions import IsMasterOrCreateOnly, IsMasterOrReadOnly, limit_to_location
+from .models import DemandLine
+from .permissions import IsMasterOrCreateOnly, IsMasterOrReadOnly, can_decide_demand_line, limit_to_location
 from .serializers import InventoryTransactionSerializer, sides_used, stock_keys, user_info
 
 
@@ -57,6 +58,39 @@ class StorageLocationScopeTests(SimpleTestCase):
             UserProfile(role=UserProfile.ROLE_LOCATION).clean()
         UserProfile(role=UserProfile.ROLE_MASTER).clean()
         UserProfile(role=UserProfile.ROLE_LOCATION, storage_location_id=3).clean()
+
+
+class DemandApprovalRoleTests(SimpleTestCase):
+    def user(self, role, st_loc_id=None):
+        user = User(id=7, username=role)
+        UserProfile(user=user, role=role, storage_location_id=st_loc_id)
+        return user
+
+    def test_master_decides_every_line(self):
+        master = self.user(UserProfile.ROLE_MASTER)
+        self.assertTrue(can_decide_demand_line(master, DemandLine(referred_to_id=None)))
+        self.assertTrue(can_decide_demand_line(master, DemandLine(referred_to_id=9)))
+
+    def test_approver_decides_only_lines_referred_to_their_storage_location(self):
+        approver = self.user(UserProfile.ROLE_APPROVER, 1)
+        self.assertTrue(can_decide_demand_line(approver, DemandLine(referred_to_id=1)))
+        self.assertFalse(can_decide_demand_line(approver, DemandLine(referred_to_id=6)))
+        self.assertFalse(can_decide_demand_line(approver, DemandLine(referred_to_id=None)))
+
+    def test_other_roles_do_not_decide(self):
+        for role in (UserProfile.ROLE_LOCATION, UserProfile.ROLE_ALL_AREAS):
+            with self.subTest(role=role):
+                self.assertFalse(can_decide_demand_line(self.user(role, 1), DemandLine(referred_to_id=1)))
+
+    def test_me_reports_who_can_approve_demands(self):
+        approver = location_user()
+        approver.profile.role = UserProfile.ROLE_APPROVER
+        self.assertTrue(user_info(approver)['can_approve_demands'])
+        self.assertFalse(user_info(location_user())['can_approve_demands'])
+
+    def test_approver_needs_a_storage_location(self):
+        with self.assertRaises(ValidationError):
+            UserProfile(role=UserProfile.ROLE_APPROVER).clean()
 
 
 class InventoryTransactionTests(SimpleTestCase):

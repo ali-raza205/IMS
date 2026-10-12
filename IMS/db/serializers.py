@@ -28,7 +28,7 @@ from .models import (
     Units,
     UserProfile,
 )
-from .permissions import LocationScopedFieldsMixin, is_master, sees_all_locations, user_location_id
+from .permissions import LocationScopedFieldsMixin, is_approver, is_master, sees_all_locations, user_location_id
 
 
 def name_field(source):
@@ -52,6 +52,7 @@ def user_info(user):
         'storage_location_name': storage_location.details if storage_location else None,
         'location_id': location.location_id if location else None,
         'location_name': location.location_name if location else None,
+        'can_approve_demands': is_master(user) or is_approver(user),
     }
 
 
@@ -384,6 +385,48 @@ def check_stock(keys):
                 })
 
 
+def item_option_errors(item, sub_cat, spec, require_choice):
+    """
+    Errors when the sub category or spec is not of the item; with `require_choice` also when the item has
+    sub categories or specs to choose from and none is chosen.
+    """
+    if sub_cat is not None and sub_cat.item_id != item.pk:
+        return {'sub_cat': 'This sub category is not of the chosen item.'}
+    if spec is not None and (spec.item_id != item.pk or spec.sub_cat_id not in (None, getattr(sub_cat, 'pk', None))):
+        return {'spec': 'This spec is not of the chosen item and sub category.'}
+    if require_choice:
+        if sub_cat is None and item.sub_categories.filter(is_active=True).exists():
+            return {'sub_cat': 'Choose a sub category of this item.'}
+        if spec is None and specs_for(item.pk, getattr(sub_cat, 'pk', None)).exists():
+            return {'spec': 'Choose a spec of this item.'}
+    return {}
+
+
+def check_allocation(txn):
+    """
+    A transaction issued against a demand allocation must stay a transfer of that line's item from the allocation's
+    storage location to the demanding one, and all its issues together may not exceed the approved quantity.
+    """
+    if txn.demand_allocation_id is None:
+        return
+    allocation = txn.demand_allocation
+    line = allocation.line
+    if (txn.txn_type_id != TransactionType.INTERNAL_TRANSFER
+            or (txn.item_id, txn.sub_cat_id, txn.spec_id) != (line.item_id, line.sub_cat_id, line.spec_id)
+            or txn.from_storage_location_id != allocation.from_storage_location_id
+            or txn.to_storage_location_id != line.demand.for_storage_location_id):
+        raise serializers.ValidationError(
+            'An issue against a demand must stay an internal transfer of the demanded item, '
+            'from the approved storage location to the demanding one.'
+        )
+    issued = allocation.transactions.aggregate(total=Sum('quantity'))['total'] or 0
+    if issued > allocation.quantity:
+        raise serializers.ValidationError({
+            'quantity': f'Only {allocation.quantity - (issued - txn.quantity)} more can be issued against this approval '
+                        f'({allocation.quantity} approved).',
+        })
+
+
 class InventoryTransactionListSerializer(serializers.ListSerializer):
     """POST a list to save several item lines at once; they are saved together or not at all."""
 
@@ -419,6 +462,7 @@ class InventoryTransactionSerializer(LocationScopedFieldsMixin, serializers.Mode
     to_storage_location_name = name_field('to_storage_location.details')
     to_shed_name = name_field('to_sto_shed.shed.shed_name')
     party_name = name_field('party.party_name')
+    demand_no = name_field('demand_allocation.line.demand.demand_no')
 
     # A transfer goes to another storage location, so the receiving side is not limited to the user's own.
     unscoped_fields = ('to_storage_location', 'to_sto_shed')
@@ -426,7 +470,7 @@ class InventoryTransactionSerializer(LocationScopedFieldsMixin, serializers.Mode
     class Meta:
         model = InventoryTransaction
         fields = "__all__"
-        read_only_fields = ['created_by', 'created_at']
+        read_only_fields = ['created_by', 'created_at', 'demand_allocation']
         list_serializer_class = InventoryTransactionListSerializer
         extra_kwargs = {'status': {'required': False}}
 
@@ -523,16 +567,8 @@ class InventoryTransactionSerializer(LocationScopedFieldsMixin, serializers.Mode
             if txn_type.pk == TransactionType.DISPATCH and not value('issued_to'):
                 errors['issued_to'] = 'Required for Dispatch.'
 
-        item, sub_cat, spec = value('item'), value('sub_cat'), value('spec')
-        if sub_cat is not None and sub_cat.item_id != item.pk:
-            errors['sub_cat'] = 'This sub category is not of the chosen item.'
-        if spec is not None and (spec.item_id != item.pk or spec.sub_cat_id not in (None, getattr(sub_cat, 'pk', None))):
-            errors['spec'] = 'This spec is not of the chosen item and sub category.'
-        if instance is None and not errors:
-            if sub_cat is None and item.sub_categories.filter(is_active=True).exists():
-                errors['sub_cat'] = 'Choose a sub category of this item.'
-            elif spec is None and specs_for(item.pk, getattr(sub_cat, 'pk', None)).exists():
-                errors['spec'] = 'Choose a spec of this item.'
+        if not errors:
+            errors.update(item_option_errors(value('item'), value('sub_cat'), value('spec'), instance is None))
         if errors:
             raise serializers.ValidationError(errors)
         return attrs
@@ -541,6 +577,7 @@ class InventoryTransactionSerializer(LocationScopedFieldsMixin, serializers.Mode
         txn = super().create(validated_data)
         self.new_files += [getattr(txn, field).name for field in IMAGE_FIELDS if validated_data.get(field)]
         check_stock(stock_keys(txn))
+        check_allocation(txn)
         return txn
 
     def update(self, instance, validated_data):
@@ -553,6 +590,7 @@ class InventoryTransactionSerializer(LocationScopedFieldsMixin, serializers.Mode
                     self.new_files.append(getattr(txn, field).name)
                 self.replaced_files.append(old_files[field])
         check_stock(before | stock_keys(txn))
+        check_allocation(txn)
         return txn
 
 
