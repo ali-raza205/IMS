@@ -23,6 +23,7 @@ from .api_views import (
     UnitsViewSet,
 )
 from .dashboard import DashboardView
+from .demand_dashboard import DemandDashboardView
 from .demands import DemandLineViewSet, DemandViewSet
 
 
@@ -52,6 +53,7 @@ urlpatterns = [
     path('auth/refresh/', TokenRefreshView.as_view(), name='auth-refresh'),
     path('auth/me/', MeView.as_view(), name='auth-me'),
     path('dashboard/', DashboardView.as_view(), name='dashboard'),
+    path('dashboard/demands/', DemandDashboardView.as_view(), name='dashboard-demands'),
     path('', include(router.urls)),
 ]
 

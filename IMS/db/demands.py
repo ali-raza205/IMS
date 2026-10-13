@@ -158,22 +158,35 @@ class DemandLineSerializer(serializers.ModelSerializer):
         return attrs
 
 
-def demand_status(lines):
-    """pending, in_process, approved, partly_issued, completed or rejected, from the lines' decisions and issues."""
-    statuses = {line.status for line in lines}
+DEMAND_STATUSES = ('pending', 'in_process', 'approved', 'partly_issued', 'completed', 'rejected')
+
+
+def status_from(line_statuses, approved, issued):
+    """
+    A demand's status from its lines' statuses and the quantities approved and issued:
+    pending, in_process, approved, partly_issued, completed or rejected.
+    """
+    statuses = set(line_statuses)
     if not statuses or statuses == {DemandLine.PENDING}:
         return 'pending'
     if statuses == {DemandLine.REJECTED}:
         return 'rejected'
     if DemandLine.PENDING in statuses:
         return 'in_process'
-    approved = [line for line in lines if line.status == DemandLine.APPROVED]
-    allocations = [allocation for line in approved for allocation in line.allocations.all()]
-    issued = sum((issued_quantity(allocation) for allocation in allocations), ZERO)
-    total = sum((allocation.quantity for allocation in allocations), ZERO)
     if issued == 0:
         return 'approved'
-    return 'completed' if issued >= total else 'partly_issued'
+    return 'completed' if issued >= approved else 'partly_issued'
+
+
+def demand_status(lines):
+    """The status of a demand from its (prefetched) lines."""
+    allocations = [allocation for line in lines if line.status == DemandLine.APPROVED
+                   for allocation in line.allocations.all()]
+    return status_from(
+        [line.status for line in lines],
+        sum((allocation.quantity for allocation in allocations), ZERO),
+        sum((issued_quantity(allocation) for allocation in allocations), ZERO),
+    )
 
 
 class DemandSerializer(LocationScopedFieldsMixin, serializers.ModelSerializer):
