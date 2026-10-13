@@ -24,6 +24,7 @@ class ItemStatus(models.Model):
     """Serviceable (1) or Non Serviceable (2)."""
     SERVICEABLE = 1
     NON_SERVICEABLE = 2
+    REPAIRABLE = 3
 
     status_id = models.BigAutoField(primary_key=True)
     status_name = models.TextField()
@@ -31,6 +32,22 @@ class ItemStatus(models.Model):
     class Meta:
         managed = False
         db_table = 'item_status'
+
+
+class StockOwner(models.Model):
+    """Who stock belongs to, wherever it is kept: PDMA (1) or NDMA (2)."""
+    PDMA = 1
+    NDMA = 2
+
+    owner_id = models.BigAutoField(primary_key=True)
+    owner_name = models.CharField(unique=True, max_length=50)
+
+    class Meta:
+        managed = False
+        db_table = 'stock_owner'
+
+    def __str__(self):
+        return self.owner_name
 
 
 class Items(models.Model):
@@ -101,6 +118,8 @@ class TransactionType(models.Model):
     INTERNAL_TRANSFER = 5
     OPENING_STOCK = 6
     STATUS_CHANGE = 7
+    DISPATCH_TO_DISTRICT = 8
+    RETURN = 9
 
     type_id = models.BigAutoField(primary_key=True)
     type_name = models.CharField(unique=True, max_length=50)
@@ -138,11 +157,27 @@ class Party(models.Model):
         return self.party_name
 
 
+class DispatchPurpose(models.Model):
+    """Why stock was dispatched for use: relief distribution, rescue operation..."""
+    purpose_id = models.BigAutoField(primary_key=True)
+    purpose_name = models.CharField(unique=True, max_length=100)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        managed = False
+        db_table = 'dispatch_purpose'
+
+
 class InventoryTransaction(models.Model):
     """
     Every incoming and outgoing movement, one item line per row.
     Incoming rows fill the `to_` storage location, outgoing rows the `from_` one, transfers both.
     """
+    PENDING = 'pending'
+    APPROVED = 'approved'
+    REJECTED = 'rejected'
+    APPROVAL_CHOICES = [(PENDING, 'Pending'), (APPROVED, 'Approved'), (REJECTED, 'Rejected')]
+
     txn_id = models.BigAutoField(primary_key=True)
     txn_no = models.CharField(max_length=50, blank=True, null=True)
     txn_type = models.ForeignKey(TransactionType, models.DO_NOTHING)
@@ -154,6 +189,11 @@ class InventoryTransaction(models.Model):
     # Status Change only: the status the stock had before; `status` is the new one.
     from_status = models.ForeignKey(
         ItemStatus, models.DO_NOTHING, blank=True, null=True, related_name='status_changes_from'
+    )
+    # Whose stock this is (PDMA or NDMA); `from_owner` is the owner before when ownership changes hands.
+    owner = models.ForeignKey(StockOwner, models.DO_NOTHING, default=StockOwner.PDMA, related_name='transactions')
+    from_owner = models.ForeignKey(
+        StockOwner, models.DO_NOTHING, blank=True, null=True, related_name='transactions_handed_over'
     )
     quantity = models.DecimalField(max_digits=15, decimal_places=2)
     unit_price = models.DecimalField(max_digits=15, decimal_places=2, blank=True, null=True)
@@ -177,6 +217,13 @@ class InventoryTransaction(models.Model):
     manufacturing_date = models.DateField(blank=True, null=True)
     expiry_date = models.DateField(blank=True, null=True)
     remarks = models.TextField(blank=True, null=True)
+    purpose = models.ForeignKey(DispatchPurpose, models.DO_NOTHING, blank=True, null=True)
+    # Pending movements count for nothing until approved: warehouse movements and returns by DG PDMA (master users),
+    # status changes by the inspection team.
+    approval_status = models.CharField(max_length=10, choices=APPROVAL_CHOICES, default=APPROVED)
+    approved_by = models.BigIntegerField(blank=True, null=True)
+    approved_at = models.DateTimeField(blank=True, null=True)
+    approval_remarks = models.TextField(blank=True, null=True)
     demand_allocation = models.ForeignKey(
         'DemandAllocation', models.DO_NOTHING, blank=True, null=True, related_name='transactions'
     )
@@ -209,7 +256,8 @@ class Demand(models.Model):
 
 class DemandLine(models.Model):
     """
-    One item of a demand. The PDMA Admin refers it to a storage location (`referred_to`) and approves or rejects it;
+    One item of a demand. The PDMA Admin refers it to a storage location (`referred_to`) or requests it from NDMA
+    (`referred_owner`); it is approved or rejected by the PDMA Admin (PDMA stock) or by NDMA (NDMA stock);
     an approval is one or more DemandAllocations, possibly less than requested (rationalized).
     """
     PENDING = 'pending'
@@ -227,6 +275,10 @@ class DemandLine(models.Model):
     referred_to = models.ForeignKey(
         'StorageLocation', models.DO_NOTHING, blank=True, null=True, related_name='referred_demand_lines'
     )
+    # Whose stock the line is to be given from: PDMA (decided by the PDMA Admin) or NDMA (decided by NDMA only).
+    referred_owner = models.ForeignKey(
+        'StockOwner', models.DO_NOTHING, default=1, related_name='referred_demand_lines'
+    )
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=PENDING)
     decision_remarks = models.TextField(blank=True, null=True)
     decided_by = models.BigIntegerField(blank=True, null=True)
@@ -242,6 +294,7 @@ class DemandAllocation(models.Model):
     allocation_id = models.BigAutoField(primary_key=True)
     line = models.ForeignKey(DemandLine, models.CASCADE, related_name='allocations')
     from_storage_location = models.ForeignKey('StorageLocation', models.DO_NOTHING, related_name='demand_allocations')
+    owner = models.ForeignKey(StockOwner, models.DO_NOTHING, default=StockOwner.PDMA, related_name='demand_allocations')
     quantity = models.DecimalField(max_digits=15, decimal_places=2)
     approved_by = models.BigIntegerField(blank=True, null=True)
     approved_at = models.DateTimeField(blank=True, null=True)
@@ -263,6 +316,7 @@ class StockBalance(models.Model):
     sub_cat = models.ForeignKey(ItemSubCategory, models.DO_NOTHING, blank=True, null=True)
     spec = models.ForeignKey(ItemSpec, models.DO_NOTHING, blank=True, null=True)
     status = models.ForeignKey(ItemStatus, models.DO_NOTHING)
+    owner = models.ForeignKey(StockOwner, models.DO_NOTHING)
     quantity = models.DecimalField(max_digits=20, decimal_places=2)
 
     class Meta:
@@ -321,6 +375,10 @@ class StorageShed(models.Model):
 
 
 class StorageType(models.Model):
+    """District (1): manages its own stock. Warehouse (2): its movements need DG PDMA approval."""
+    DISTRICT = 1
+    WAREHOUSE = 2
+
     type_id = models.BigAutoField(primary_key=True)
     type_name = models.TextField()
 
@@ -344,18 +402,23 @@ class UserProfile(models.Model):
     Ties a login to a storage location. Master users (and superusers) see every storage location.
     All areas users work on records of every storage location but, unlike master users,
     cannot edit or delete shared lookup data or change areas and storage locations.
-    Storage location approvers are storage location users who may also approve or reject demand lines
-    referred to their storage location, from its own stock. Master users (PDMA Admin) approve any demand.
+    Inspection team users approve or reject status changes.
+    Master users (PDMA Admin, DG PDMA) refer every demand and approve, reject or rationalize every line from PDMA stock;
+    they request NDMA stock by referring a line to NDMA. NDMA users (a separate body) see and record only NDMA's own
+    stock, kept in any storage location, and the lines referred to NDMA, which they alone decide.
+    Storage locations only issue what was approved.
     """
+    ROLE_NDMA = 'ndma'
     ROLE_MASTER = 'master'
     ROLE_ALL_AREAS = 'all_areas'
     ROLE_LOCATION = 'location'
-    ROLE_APPROVER = 'location_approver'
+    ROLE_INSPECTION = 'inspection'
     ROLE_CHOICES = [
+        (ROLE_NDMA, 'NDMA'),
         (ROLE_MASTER, 'Master'),
         (ROLE_ALL_AREAS, 'All areas user'),
         (ROLE_LOCATION, 'Storage location user'),
-        (ROLE_APPROVER, 'Storage location approver'),
+        (ROLE_INSPECTION, 'Inspection team'),
     ]
 
     user = models.OneToOneField(settings.AUTH_USER_MODEL, models.CASCADE, related_name='profile')
@@ -372,5 +435,5 @@ class UserProfile(models.Model):
 
     def clean(self):
         # Without a storage location a non-master user sees no records at all.
-        if self.role in (self.ROLE_LOCATION, self.ROLE_APPROVER) and self.storage_location_id is None:
+        if self.role == self.ROLE_LOCATION and self.storage_location_id is None:
             raise ValidationError({'storage_location': 'Storage location users need a storage location.'})

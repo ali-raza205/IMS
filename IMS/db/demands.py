@@ -2,12 +2,15 @@
 Demands API.
 
 1. Any user raises a demand (items with quantities) for a storage location; storage location users for their own.
-2. The PDMA Admin (master user) refers each line to a storage location that has the stock.
+2. The PDMA Admin (master users) refers each line to a storage location that has the stock, or to NDMA.
 3. The line is approved, possibly for less than requested (rationalized) and split over several storage locations
-   (allocations), or rejected. Master users decide every line; storage location approvers decide the lines referred
-   to their own storage location, from its own stock.
-4. The giving storage location issues each allocation, at once or in parts, as internal transfers to the demanding
+   (allocations), or rejected. The PDMA Admin (DG PDMA) decides every line from PDMA stock, seeing the available
+   quantity on each line; it requests NDMA stock by referring a line to NDMA. NDMA is a separate body: it alone
+   decides the lines referred to it, from NDMA stock kept in any storage location.
+4. Storage locations only issue: the giving storage location issues each allocation, at once or in parts, as internal transfers to the demanding
    storage location, linked to the allocation.
+Stock in every storage location belongs to PDMA or NDMA. Issued stock becomes PDMA's (NDMA stock is handed over
+when issued).
 """
 from decimal import Decimal
 
@@ -28,18 +31,21 @@ from .models import (
     InventoryTransaction,
     ItemStatus,
     StockBalance,
+    StockOwner,
     StorageLocation,
+    StorageType,
     TransactionType,
 )
 from .permissions import (
     LocationScopedFieldsMixin,
     can_decide_demand_line,
-    is_approver,
-    is_master,
+    is_district,
+    is_ndma,
+    is_pdma_admin,
     sees_all_locations,
     user_location_id,
 )
-from .serializers import InventoryTransactionSerializer, item_option_errors, name_field
+from .serializers import InventoryTransactionSerializer, item_option_errors, movement_kind, name_field
 
 ZERO = Decimal('0')
 
@@ -56,7 +62,7 @@ def item_key(line):
 
 
 def reserved_quantities(line):
-    """{storage location id: approved but not yet issued quantity} of the line's item for other demand lines."""
+    """{(storage location id, owner id): approved but not yet issued quantity} of the line's item for other lines."""
     allocations = (
         DemandAllocation.objects
         .filter(line__item_id=line.item_id, line__sub_cat_id=line.sub_cat_id, line__spec_id=line.spec_id,
@@ -67,30 +73,35 @@ def reserved_quantities(line):
     reserved = {}
     for allocation in allocations:
         open_quantity = max(allocation.quantity - allocation.issued, ZERO)
-        reserved[allocation.from_storage_location_id] = reserved.get(allocation.from_storage_location_id, ZERO) + open_quantity
+        key = (allocation.from_storage_location_id, allocation.owner_id)
+        reserved[key] = reserved.get(key, ZERO) + open_quantity
     return reserved
 
 
 def availability(line):
     """
-    Serviceable stock of the line's item per storage location (other than the demanding one): on hand, reserved for
-    other approved demands and still available, most available first.
+    Serviceable stock of the line's item per storage location (other than the demanding one) and owner (PDMA, NDMA):
+    on hand, reserved for other approved demands and still available, most available first.
     """
     on_hand = (
         StockBalance.objects
         .filter(status_id=ItemStatus.SERVICEABLE, **item_key(line))
         .exclude(storage_location_id=line.demand.for_storage_location_id)
-        .values('storage_location_id', 'storage_location__details', 'storage_location__location__location_name')
+        .values('storage_location_id', 'storage_location__details', 'storage_location__location__location_name',
+                'storage_location__type_id', 'owner_id', 'owner__owner_name')
         .annotate(on_hand=Sum('quantity'))
     )
     reserved = reserved_quantities(line)
     rows = []
     for row in on_hand:
-        held = reserved.get(row['storage_location_id'], ZERO)
+        held = reserved.get((row['storage_location_id'], row['owner_id']), ZERO)
         rows.append({
             'storage_location_id': row['storage_location_id'],
             'storage_location_name': row['storage_location__details'],
             'location_name': row['storage_location__location__location_name'],
+            'is_district': row['storage_location__type_id'] == StorageType.DISTRICT,
+            'owner_id': row['owner_id'],
+            'owner_name': row['owner__owner_name'],
             'on_hand': row['on_hand'],
             'reserved': held,
             'available': max(row['on_hand'] - held, ZERO),
@@ -98,10 +109,27 @@ def availability(line):
     return sorted(rows, key=lambda row: row['available'], reverse=True)
 
 
+def can_give(line, row):
+    """
+    Whether stock in availability `row` can be given for `line`: NDMA stock anywhere for a line referred to NDMA;
+    the district's own stock for a return asked from a district; otherwise PDMA stock in warehouses.
+    """
+    if row['is_district'] and is_district(line.demand.for_storage_location):
+        return False  # stock does not move from one district to another
+    if line.referred_owner_id == StockOwner.NDMA:
+        return row['owner_id'] == StockOwner.NDMA
+    if row['owner_id'] != StockOwner.PDMA:
+        return False
+    if is_district(line.referred_to):
+        return row['storage_location_id'] == line.referred_to_id
+    return not row['is_district']
+
+
 # --- Serializers ----------------------------------------------------------------
 
 class DemandAllocationSerializer(serializers.ModelSerializer):
     from_storage_location_name = name_field('from_storage_location.details')
+    owner_name = name_field('owner.owner_name')
     issued_quantity = serializers.SerializerMethodField()
     remaining_quantity = serializers.SerializerMethodField()
 
@@ -123,16 +151,20 @@ class DemandLineSerializer(serializers.ModelSerializer):
     spec_name = name_field('spec.spec_name')
     unit_name = name_field('item.unit.unit_name')
     referred_to_name = name_field('referred_to.details')
+    referred_owner_name = name_field('referred_owner.owner_name')
     allocations = DemandAllocationSerializer(many=True, read_only=True)
     approved_quantity = serializers.SerializerMethodField()
     issued_quantity = serializers.SerializerMethodField()
     rationalized = serializers.SerializerMethodField()
     can_decide = serializers.SerializerMethodField()
+    available_quantity = serializers.SerializerMethodField(
+        help_text='Serviceable stock of this item available to give (not promised to other demands), of the owner the '
+                  'line is referred to (PDMA or NDMA), over all storage locations but the demanding one.')
 
     class Meta:
         model = DemandLine
         exclude = ['demand']
-        read_only_fields = ['referred_to', 'status', 'decision_remarks', 'decided_by', 'decided_at']
+        read_only_fields = ['referred_to', 'referred_owner', 'status', 'decision_remarks', 'decided_by', 'decided_at']
 
     def get_approved_quantity(self, line):
         return sum((allocation.quantity for allocation in line.allocations.all()), ZERO)
@@ -143,6 +175,11 @@ class DemandLineSerializer(serializers.ModelSerializer):
     def get_rationalized(self, line):
         """Approved for less than requested."""
         return line.status == DemandLine.APPROVED and self.get_approved_quantity(line) < line.quantity
+
+    def get_available_quantity(self, line):
+        if line.status != DemandLine.PENDING:
+            return None
+        return sum((row['available'] for row in availability(line) if can_give(line, row)), ZERO)
 
     def get_can_decide(self, line):
         request = self.context.get('request')
@@ -208,6 +245,13 @@ class DemandSerializer(LocationScopedFieldsMixin, serializers.ModelSerializer):
     def get_status(self, demand):
         return demand_status(list(demand.lines.all()))
 
+    def to_representation(self, demand):
+        data = super().to_representation(demand)
+        request = self.context.get('request')
+        if request is not None and is_ndma(request.user):  # NDMA sees only the lines referred to it
+            data['lines'] = [line for line in data['lines'] if line['referred_owner'] == StockOwner.NDMA]
+        return data
+
     def validate(self, attrs):
         attrs = super().validate(attrs)
         if self.instance is None:
@@ -245,6 +289,8 @@ class DemandSerializer(LocationScopedFieldsMixin, serializers.ModelSerializer):
 
 class AllocationInputSerializer(serializers.Serializer):
     from_storage_location = serializers.PrimaryKeyRelatedField(queryset=StorageLocation.objects.all())
+    owner = serializers.PrimaryKeyRelatedField(queryset=StockOwner.objects.all(), required=False,
+                                               help_text='Whose stock is given: 1 PDMA (default) or 2 NDMA.')
     quantity = serializers.DecimalField(max_digits=15, decimal_places=2, min_value=Decimal('0.01'))
 
 
@@ -276,9 +322,18 @@ def line_scope(location_id):
         Q(allocations__from_storage_location=location_id)
 
 
+# NDMA sees only the requests referred to it.
+NDMA_DEMAND_SCOPES = {
+    Demand: Q(lines__referred_owner=StockOwner.NDMA),
+    DemandLine: Q(referred_owner=StockOwner.NDMA),
+}
+
+
 def scoped(queryset, user, scope):
     if sees_all_locations(user):
         return queryset
+    if is_ndma(user):
+        return queryset.filter(pk__in=queryset.model.objects.filter(NDMA_DEMAND_SCOPES[queryset.model]).values('pk'))
     location_id = user_location_id(user)
     if location_id is None:
         return queryset.none()
@@ -286,11 +341,47 @@ def scoped(queryset, user, scope):
 
 
 def awaiting_decision(lines, user):
-    """Pending lines this user may decide."""
+    """
+    Pending lines this user may decide: NDMA those referred to NDMA, a district the returns asked from it, the PDMA
+    Admin all others.
+    """
     lines = lines.filter(status=DemandLine.PENDING)
-    if is_master(user):
-        return lines
-    return lines.filter(referred_to=user_location_id(user)) if is_approver(user) else lines.none()
+    if is_ndma(user):
+        return lines.filter(referred_owner=StockOwner.NDMA)
+    pdma = lines.filter(referred_owner=StockOwner.PDMA)
+    if is_pdma_admin(user):
+        return pdma.exclude(referred_to__type_id=StorageType.DISTRICT)
+    location_id = user_location_id(user)
+    if location_id is None or sees_all_locations(user):
+        return lines.none()
+    return pdma.filter(referred_to=location_id, referred_to__type_id=StorageType.DISTRICT)
+
+
+def refer_target(request, demand):
+    """
+    (storage location or None, owner id) to refer lines to, from {"referred_to": id, "owner": 1|2}.
+    Lines referred to NDMA (owner 2) need no storage location: NDMA gives from its stock in any of them.
+    """
+    if not is_pdma_admin(request.user):
+        raise PermissionDenied('Only the PDMA Admin refers demands.')
+    owner = id_param_from(request.data, 'owner') or StockOwner.PDMA
+    if owner not in (StockOwner.PDMA, StockOwner.NDMA):
+        raise serializers.ValidationError({'owner': 'Use 1 (PDMA) or 2 (NDMA).'})
+    referred_to = id_param_from(request.data, 'referred_to')
+    location = StorageLocation.objects.filter(pk=referred_to).first() if referred_to else None
+    if referred_to and location is None:
+        raise serializers.ValidationError({'referred_to': 'No such storage location.'})
+    if location is None and owner == StockOwner.PDMA:
+        raise serializers.ValidationError({'referred_to': 'Choose a storage location, or refer it to NDMA (owner 2).'})
+    if location is not None and location.pk == demand.for_storage_location_id:
+        raise serializers.ValidationError({'referred_to': 'Refer it to another storage location than the demanding one.'})
+    if is_district(location):
+        if owner == StockOwner.NDMA:
+            raise serializers.ValidationError({'referred_to': 'NDMA stock is requested from NDMA, not from a district.'})
+        if is_district(demand.for_storage_location):
+            raise serializers.ValidationError({'referred_to': 'Stock does not move from one district to another; '
+                                                              'ask the district for a return to a warehouse.'})
+    return location, owner
 
 
 LINE_PREFETCH = ('lines__allocations__transactions', 'lines__item__unit', 'lines__sub_cat', 'lines__spec',
@@ -303,8 +394,8 @@ class DemandViewSet(LogSubmitMixin, viewsets.ModelViewSet):
     allocated from it; master and all areas users see all.
     Filters: ?for_storage_location, ?referred_to, ?status (pending, in_process, approved, partly_issued, completed,
     rejected), ?awaiting_my_decision=true (demands with lines the user can approve or reject now).
-    POST /api/demands/<id>/refer/ {"referred_to": id, "lines": [ids]} refers lines (all pending ones by default);
-    master users only.
+    POST /api/demands/<id>/refer/ {"referred_to": id, "owner": 1|2, "lines": [ids]} refers lines (all pending ones
+    by default) to a storage location (PDMA stock) or to NDMA (owner 2; storage location optional). PDMA Admin only.
     """
     queryset = Demand.objects.select_related('for_storage_location__location').prefetch_related(*LINE_PREFETCH) \
         .order_by('-demand_date', '-demand_id')
@@ -356,19 +447,12 @@ class DemandViewSet(LogSubmitMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def refer(self, request, pk=None):
-        if not is_master(request.user):
-            raise PermissionDenied('Only the PDMA Admin (master users) refer demands.')
         demand = self.get_object()
-        referred_to = id_param_from(request.data, 'referred_to')
-        location = StorageLocation.objects.filter(pk=referred_to).first() if referred_to else None
-        if location is None:
-            raise serializers.ValidationError({'referred_to': 'Choose a storage location.'})
-        if location.pk == demand.for_storage_location_id:
-            raise serializers.ValidationError({'referred_to': 'Refer it to another storage location than the demanding one.'})
+        location, owner = refer_target(request, demand)
         lines = demand.lines.filter(status=DemandLine.PENDING)
         if request.data.get('lines'):
             lines = lines.filter(pk__in=request.data['lines'])
-        count = lines.update(referred_to=location)
+        count = lines.update(referred_to=location, referred_owner_id=owner)
         demand = self.get_queryset().get(pk=demand.pk)
         return Response({'referred_lines': count, 'demand': self.get_serializer(demand).data})
 
@@ -385,14 +469,15 @@ class DemandLineViewSet(LogSubmitMixin, viewsets.ReadOnlyModelViewSet):
     Demand lines, with the actions on them:
     GET  /api/demand-lines/?awaiting_my_decision=true  lines the user can approve or reject now
     GET  /api/demand-lines/<id>/availability/  stock per storage location to approve from
-    POST /api/demand-lines/<id>/refer/    {"referred_to": id}  (master users)
-    POST /api/demand-lines/<id>/approve/  {"allocations": [{"from_storage_location": id, "quantity": n}],
+    POST /api/demand-lines/<id>/refer/    {"referred_to": id, "owner": 1|2}  (PDMA Admin; owner 2 = to NDMA)
+    POST /api/demand-lines/<id>/approve/  {"allocations": [{"from_storage_location": id, "owner": 1|2, "quantity": n}],
                                            "decision_remarks": "..."}  (less than requested = rationalized)
     POST /api/demand-lines/<id>/reject/   {"decision_remarks": "..."}
     POST /api/demand-lines/<id>/issue/    {"allocation": id, "quantity": n, "txn_date": "YYYY-MM-DD",
                                            "from_sto_shed": .., "to_sto_shed": .., "remarks": ".."}
-    Master users decide every line; storage location approvers the lines referred to their storage location, and
-    only from its stock. The giving storage location (or a master / all areas user) issues approved quantities.
+    NDMA alone decides the lines referred to NDMA, from NDMA stock in any storage location. The PDMA Admin decides
+    every other line from PDMA stock. The giving storage location (or a master / all areas user) issues approved
+    quantities.
     """
     queryset = DemandLine.objects.select_related(
         'demand__for_storage_location', 'item__unit', 'sub_cat', 'spec', 'referred_to',
@@ -415,8 +500,9 @@ class DemandLineViewSet(LogSubmitMixin, viewsets.ReadOnlyModelViewSet):
     def _decidable(self):
         line = self.get_object()
         if not can_decide_demand_line(self.request.user, line):
-            raise PermissionDenied('Only the PDMA Admin, or an approver of the storage location this line is '
-                                   'referred to, can decide it.')
+            if line.referred_owner_id == StockOwner.NDMA:
+                raise PermissionDenied('This line is referred to NDMA; only NDMA can accept, reject or rationalize it.')
+            raise PermissionDenied('Only the PDMA Admin decides demands; storage locations only issue.')
         return line
 
     def _line_response(self, line):
@@ -424,22 +510,19 @@ class DemandLineViewSet(LogSubmitMixin, viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True)
     def availability(self, request, pk=None):
-        return Response(availability(self.get_object()))
+        rows = availability(self.get_object())
+        if is_ndma(request.user):  # NDMA sees only its own stock
+            rows = [row for row in rows if row['owner_id'] == StockOwner.NDMA]
+        return Response(rows)
 
     @action(detail=True, methods=['post'])
     def refer(self, request, pk=None):
-        if not is_master(request.user):
-            raise PermissionDenied('Only the PDMA Admin (master users) refer demands.')
         line = self.get_object()
+        location, owner = refer_target(request, line.demand)
         if line.status != DemandLine.PENDING:
             raise serializers.ValidationError('Only pending lines can be referred.')
-        location = StorageLocation.objects.filter(pk=id_param_from(request.data, 'referred_to')).first()
-        if location is None:
-            raise serializers.ValidationError({'referred_to': 'Choose a storage location.'})
-        if location.pk == line.demand.for_storage_location_id:
-            raise serializers.ValidationError({'referred_to': 'Refer it to another storage location than the demanding one.'})
-        line.referred_to = location
-        line.save(update_fields=['referred_to'])
+        line.referred_to, line.referred_owner_id = location, owner
+        line.save(update_fields=['referred_to', 'referred_owner'])
         return self._line_response(line)
 
     @action(detail=True, methods=['post'])
@@ -450,50 +533,68 @@ class DemandLineViewSet(LogSubmitMixin, viewsets.ReadOnlyModelViewSet):
         allocations = data.validated_data['allocations']
         user = request.user
 
+        # {(storage location, owner): quantity}; the stock is of the owner the line is referred to.
+        owner_id = line.referred_owner_id
+        names = {StockOwner.PDMA: 'PDMA', StockOwner.NDMA: 'NDMA'}
         wanted = {}
-        for allocation in allocations:
-            location = allocation['from_storage_location']
-            wanted[location.pk] = wanted.get(location.pk, ZERO) + allocation['quantity']
         errors = []
-        if line.demand.for_storage_location_id in wanted:
+        for allocation in allocations:
+            owner = allocation.get('owner')
+            if owner is not None and owner.pk != owner_id:
+                errors.append(f'This line is referred to {names[owner_id]}, so only {names[owner_id]} stock can be '
+                              f'given; the PDMA Admin can refer it again to change that.')
+            key = (allocation['from_storage_location'].pk, owner_id)
+            wanted[key] = wanted.get(key, ZERO) + allocation['quantity']
+        if line.demand.for_storage_location_id in {location_id for location_id, _ in wanted}:
             errors.append('Stock can not be approved from the demanding storage location itself.')
-        if not is_master(user) and set(wanted) != {user_location_id(user)}:
-            errors.append('Approvers can only approve from their own storage location.')
         if sum(wanted.values(), ZERO) > line.quantity:
             errors.append(f'Approved quantity is more than the {line.quantity} demanded.')
 
-        existing = {allocation.from_storage_location_id: allocation for allocation in line.allocations.all()}
-        if not is_master(user) and set(existing) - {user_location_id(user)}:
-            errors.append('Other storage locations already give for this line; only the PDMA Admin can change that.')
-        available = {row['storage_location_id']: row['available'] for row in availability(line)}
-        for location_id, quantity in wanted.items():
-            issued = issued_quantity(existing[location_id]) if location_id in existing else ZERO
+        existing = {(allocation.from_storage_location_id, allocation.owner_id): allocation
+                    for allocation in line.allocations.all()}
+        rows = availability(line)
+        available = {(row['storage_location_id'], row['owner_id']): row['available'] for row in rows}
+        givers = {(row['storage_location_id'], row['owner_id']) for row in rows if can_give(line, row)}
+        for key in wanted:
+            if key not in givers and key[0] in {row['storage_location_id'] for row in rows}:
+                if line.referred_owner_id == StockOwner.NDMA:
+                    errors.append(f'Storage location {key[0]}: only NDMA stock is given for this line.')
+                elif is_district(line.referred_to):
+                    errors.append(f'Storage location {key[0]}: this return is given only by {line.referred_to}.')
+                else:
+                    errors.append(f'Storage location {key[0]}: the DG PDMA gives from warehouses; district stock is '
+                                  f'asked for as a return.')
+        for (location_id, owner_id), quantity in wanted.items():
+            where = f'{names.get(owner_id, owner_id)} stock at storage location {location_id}'
+            allocation = existing.get((location_id, owner_id))
+            issued = issued_quantity(allocation) if allocation else ZERO
             if quantity < issued:
-                errors.append(f'{issued} has already been issued from storage location {location_id}.')
-            elif quantity - issued > available.get(location_id, ZERO):
-                errors.append(f'Only {available.get(location_id, ZERO)} available at storage location {location_id} '
+                errors.append(f'{issued} of {where} has already been issued.')
+            elif quantity - issued > available.get((location_id, owner_id), ZERO):
+                errors.append(f'Only {available.get((location_id, owner_id), ZERO)} of {where} is available '
                               f'(stock not promised to other demands).')
-        for location_id, allocation in existing.items():
-            if location_id not in wanted and issued_quantity(allocation) > 0:
-                errors.append(f'Storage location {location_id} has already issued against this line; keep it.')
+        for key, allocation in existing.items():
+            if key not in wanted and issued_quantity(allocation) > 0:
+                errors.append(f'Storage location {key[0]} has already issued against this line; keep it.')
         if errors:
             raise serializers.ValidationError({'allocations': errors})
 
         now = timezone.now()
         with transaction.atomic():
-            for location_id, allocation in existing.items():
-                if location_id not in wanted:
+            for key, allocation in existing.items():
+                if key not in wanted:
                     allocation.delete()
-            for location_id, quantity in wanted.items():
+            for (location_id, owner_id), quantity in wanted.items():
                 DemandAllocation.objects.update_or_create(
-                    line=line, from_storage_location_id=location_id,
+                    line=line, from_storage_location_id=location_id, owner_id=owner_id,
                     defaults={'quantity': quantity, 'approved_by': user.id, 'approved_at': now},
                 )
             line.status = DemandLine.APPROVED
             line.decision_remarks = data.validated_data.get('decision_remarks')
             line.decided_by, line.decided_at = user.id, now
-            if line.referred_to_id is None and len(wanted) == 1:
-                line.referred_to_id = next(iter(wanted))
+            locations = {location_id for location_id, _ in wanted}
+            if line.referred_to_id is None and len(locations) == 1:
+                line.referred_to_id = next(iter(locations))
             line.save()
         return self._line_response(line)
 
@@ -535,17 +636,20 @@ class DemandLineViewSet(LogSubmitMixin, viewsets.ReadOnlyModelViewSet):
             raise serializers.ValidationError('Everything approved here has already been issued.')
 
         transfer = InventoryTransactionSerializer(data={
-            'txn_type': TransactionType.INTERNAL_TRANSFER,
+            'txn_type': movement_kind(allocation.from_storage_location, line.demand.for_storage_location),
             'txn_date': data.validated_data.get('txn_date') or timezone.localdate(),
             'item': line.item_id, 'sub_cat': line.sub_cat_id, 'spec': line.spec_id,
             'status': ItemStatus.SERVICEABLE, 'quantity': quantity,
+            # Issued stock becomes PDMA's; NDMA stock is handed over on the way.
+            'owner': StockOwner.PDMA,
+            'from_owner': allocation.owner_id if allocation.owner_id != StockOwner.PDMA else None,
             'from_storage_location': allocation.from_storage_location_id,
             'from_sto_shed': data.validated_data.get('from_sto_shed'),
             'to_storage_location': line.demand.for_storage_location_id,
             'to_sto_shed': data.validated_data.get('to_sto_shed'),
             'txn_no': line.demand.demand_no,
             'remarks': data.validated_data.get('remarks') or f'Issued against demand {line.demand.demand_no}',
-        }, context={'request': request})
+        }, context={'request': request, 'demand_issue': True})
         transfer.is_valid(raise_exception=True)
         with transaction.atomic():
             txn = transfer.save(demand_allocation=allocation, created_by=user.id, created_at=timezone.now())

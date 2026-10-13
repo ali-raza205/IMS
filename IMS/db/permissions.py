@@ -4,7 +4,16 @@ from django.utils import timezone
 from rest_framework import permissions
 from rest_framework.exceptions import PermissionDenied
 
-from .models import InventoryTransaction, StockBalance, StorageLocation, StorageShed, UserProfile
+from .models import (
+    InventoryTransaction,
+    StockBalance,
+    StockOwner,
+    StorageLocation,
+    StorageShed,
+    StorageType,
+    TransactionType,
+    UserProfile,
+)
 
 # ORM path(s) from each storage-location-bound model to its StorageLocation row.
 # A record with several paths belongs to each of those storage locations.
@@ -16,6 +25,41 @@ LOCATION_LOOKUPS = {
 }
 
 
+def ndma_q(model):
+    """
+    What NDMA users see of `model`: NDMA's own stock and its transactions, in every storage location (and the storage
+    locations and sheds to keep it in). None when NDMA sees nothing of it.
+    """
+    return {
+        StorageLocation: Q(),
+        StorageShed: Q(),
+        StockBalance: Q(owner=StockOwner.NDMA),
+        InventoryTransaction: Q(owner=StockOwner.NDMA) | Q(from_owner=StockOwner.NDMA),
+    }.get(model)
+
+
+def inspection_q(model):
+    """What the inspection team sees of `model`: all stock and the status changes it approves."""
+    return {
+        StorageLocation: Q(),
+        StorageShed: Q(),
+        StockBalance: Q(),
+        InventoryTransaction: Q(txn_type=TransactionType.STATUS_CHANGE),
+    }.get(model)
+
+
+def role_scope(user, model):
+    """
+    (True, Q or None) for roles that see by what, not where: NDMA (its own stock) and the inspection team (status
+    changes); None means nothing of `model`. (False, None) for everyone else.
+    """
+    if is_ndma(user):
+        return True, ndma_q(model)
+    if is_inspector(user):
+        return True, inspection_q(model)
+    return False, None
+
+
 def location_q(model, location_id):
     """Rows of `model` that belong to storage location `location_id`."""
     q = Q()
@@ -25,11 +69,36 @@ def location_q(model, location_id):
 
 
 def is_master(user):
-    """Superusers and users with the master role; only they edit lookup data, areas and storage locations."""
+    """Superusers and users with the master role (PDMA Admin); only they edit lookup data, areas and storage locations."""
     if user.is_superuser:
         return True
     profile = getattr(user, 'profile', None)
     return profile is not None and profile.role == UserProfile.ROLE_MASTER
+
+
+def is_ndma(user):
+    """
+    NDMA users (a separate body): see and record only NDMA's own stock, in any storage location, and alone decide
+    the demand lines referred to NDMA.
+    """
+    profile = getattr(user, 'profile', None)
+    return profile is not None and profile.role == UserProfile.ROLE_NDMA
+
+
+def is_inspector(user):
+    """The inspection team approves or rejects status changes (e.g. Serviceable to Repairable)."""
+    profile = getattr(user, 'profile', None)
+    return profile is not None and profile.role == UserProfile.ROLE_INSPECTION
+
+
+def is_district(location):
+    """Districts manage their own stock; warehouses' movements need DG PDMA approval."""
+    return location is not None and location.type_id == StorageType.DISTRICT
+
+
+def is_pdma_admin(user):
+    """The PDMA Admin (master users and superusers): refers every demand and decides it from PDMA stock."""
+    return is_master(user)
 
 
 def sees_all_locations(user):
@@ -40,17 +109,17 @@ def sees_all_locations(user):
     return profile is not None and profile.role == UserProfile.ROLE_ALL_AREAS
 
 
-def is_approver(user):
-    """Storage location approvers approve demand lines referred to their own storage location."""
-    profile = getattr(user, 'profile', None)
-    return profile is not None and profile.role == UserProfile.ROLE_APPROVER
-
-
 def can_decide_demand_line(user, line):
-    """Master users (PDMA Admin) decide every demand line; approvers those referred to their storage location."""
-    if is_master(user):
-        return True
-    return is_approver(user) and line.referred_to_id is not None and line.referred_to_id == user_location_id(user)
+    """
+    Who accepts, rejects or rationalizes a demand line: NDMA alone when it is referred to NDMA (NDMA stock); the
+    district itself when it is referred to a district (a return the DG asks for: district stock is the district's);
+    otherwise the PDMA Admin. Warehouses only issue.
+    """
+    if line.referred_owner_id == StockOwner.NDMA:
+        return is_ndma(user)
+    if is_district(line.referred_to):
+        return not sees_all_locations(user) and not role_scope(user, InventoryTransaction)[0]             and user_location_id(user) == line.referred_to_id
+    return is_pdma_admin(user)
 
 
 def user_location_id(user):
@@ -63,6 +132,9 @@ def limit_to_location(queryset, user):
     """Rows of a storage-location-bound model that belong to the user's storage location (all rows for master and all areas users)."""
     if queryset.model not in LOCATION_LOOKUPS or sees_all_locations(user):
         return queryset
+    special, q = role_scope(user, queryset.model)
+    if special:
+        return queryset.none() if q is None else queryset.filter(q)
     location_id = user_location_id(user)
     if location_id is None:
         return queryset.none()
@@ -132,6 +204,9 @@ class LocationScopedMixin:
         user = self.request.user
         if sees_all_locations(user):
             return queryset
+        special, q = role_scope(user, queryset.model)
+        if special:
+            return queryset.none() if q is None else queryset.filter(q)
         location_id = user_location_id(user)
         if location_id is None:
             return queryset.none()
@@ -140,6 +215,13 @@ class LocationScopedMixin:
     def _check_writable(self, instance):
         user = self.request.user
         if sees_all_locations(user):
+            return
+        if is_inspector(user):
+            raise PermissionDenied('The inspection team approves status changes; it does not record movements.')
+        if is_ndma(user):
+            q = ndma_q(type(instance))
+            if q is None or not type(instance).objects.filter(q, pk=instance.pk).exists():
+                raise PermissionDenied('NDMA can only change records of NDMA stock.')
             return
         location_id = user_location_id(user)
         writable = location_id is not None and type(instance).objects.filter(

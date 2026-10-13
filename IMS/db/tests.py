@@ -7,10 +7,18 @@ from django.test import SimpleTestCase
 from rest_framework.exceptions import ValidationError as APIValidationError
 
 from .dashboard import dashboard_filters, filtered_records
-from .models import InventoryTransaction, Locations, StockBalance, StorageLocation, TransactionType, UserProfile
-from .models import DemandLine
+from .models import (
+    DemandLine,
+    InventoryTransaction,
+    Locations,
+    StockBalance,
+    StorageLocation,
+    StorageType,
+    TransactionType,
+    UserProfile,
+)
 from .permissions import IsMasterOrCreateOnly, IsMasterOrReadOnly, can_decide_demand_line, limit_to_location
-from .serializers import InventoryTransactionSerializer, sides_used, stock_keys, user_info
+from .serializers import InventoryTransactionSerializer, sides_used, stock_keys, user_info, user_role
 
 
 def location_user(st_loc_id=3):
@@ -66,31 +74,58 @@ class DemandApprovalRoleTests(SimpleTestCase):
         UserProfile(user=user, role=role, storage_location_id=st_loc_id)
         return user
 
-    def test_master_decides_every_line(self):
+    def line(self, referred_to_id=None, district=False, owner_id=1):
+        location = None
+        if referred_to_id is not None:
+            location = StorageLocation(st_loc_id=referred_to_id,
+                                       type_id=StorageType.DISTRICT if district else StorageType.WAREHOUSE)
+        return DemandLine(referred_to=location, referred_owner_id=owner_id)
+
+    def test_pdma_admin_decides_lines_from_warehouses(self):
         master = self.user(UserProfile.ROLE_MASTER)
-        self.assertTrue(can_decide_demand_line(master, DemandLine(referred_to_id=None)))
-        self.assertTrue(can_decide_demand_line(master, DemandLine(referred_to_id=9)))
+        superuser = SimpleNamespace(username='pdma_admin', is_superuser=True, profile=None)  # no role, like pdma_admin
+        for user in (master, superuser):
+            with self.subTest(user=user.username):
+                self.assertTrue(can_decide_demand_line(user, self.line(1)))
+                self.assertTrue(can_decide_demand_line(user, self.line()))
+                self.assertFalse(can_decide_demand_line(user, self.line(1, owner_id=2)))
+                self.assertFalse(can_decide_demand_line(user, self.line(9, district=True)))
+        self.assertEqual(user_role(superuser), UserProfile.ROLE_MASTER)
 
-    def test_approver_decides_only_lines_referred_to_their_storage_location(self):
-        approver = self.user(UserProfile.ROLE_APPROVER, 1)
-        self.assertTrue(can_decide_demand_line(approver, DemandLine(referred_to_id=1)))
-        self.assertFalse(can_decide_demand_line(approver, DemandLine(referred_to_id=6)))
-        self.assertFalse(can_decide_demand_line(approver, DemandLine(referred_to_id=None)))
+    def test_only_ndma_decides_lines_referred_to_ndma(self):
+        ndma = self.user(UserProfile.ROLE_NDMA)
+        self.assertTrue(can_decide_demand_line(ndma, self.line(owner_id=2)))
+        self.assertFalse(can_decide_demand_line(ndma, self.line(1)))
+        self.assertFalse(can_decide_demand_line(self.user(UserProfile.ROLE_LOCATION, 1), self.line(1, owner_id=2)))
 
-    def test_other_roles_do_not_decide(self):
-        for role in (UserProfile.ROLE_LOCATION, UserProfile.ROLE_ALL_AREAS):
+    def test_district_decides_returns_asked_from_it(self):
+        self.assertTrue(can_decide_demand_line(self.user(UserProfile.ROLE_LOCATION, 9), self.line(9, district=True)))
+        self.assertFalse(can_decide_demand_line(self.user(UserProfile.ROLE_LOCATION, 8), self.line(9, district=True)))
+
+    def test_warehouses_only_issue(self):
+        for role in (UserProfile.ROLE_LOCATION, UserProfile.ROLE_ALL_AREAS, UserProfile.ROLE_INSPECTION):
             with self.subTest(role=role):
-                self.assertFalse(can_decide_demand_line(self.user(role, 1), DemandLine(referred_to_id=1)))
+                user = self.user(role, 1)
+                self.assertFalse(can_decide_demand_line(user, self.line(1)))
+                self.assertFalse(can_decide_demand_line(user, self.line(1, owner_id=2)))
+
+    def test_ndma_sees_only_its_own_stock_and_has_no_master_powers(self):
+        ndma = self.user(UserProfile.ROLE_NDMA)
+        self.assertFalse(IsMasterOrReadOnly().has_permission(SimpleNamespace(method='DELETE', user=ndma), None))
+        txn_sql = str(limit_to_location(InventoryTransaction.objects.all(), ndma).query)
+        self.assertIn('"inventory_transaction"."owner_id" = 2', txn_sql)
+        self.assertIn('"inventory_transaction"."from_owner_id" = 2', txn_sql)
+        self.assertIn('"stock_balance"."owner_id" = 2', str(limit_to_location(StockBalance.objects.all(), ndma).query))
+        self.assertNotIn('WHERE', str(limit_to_location(StorageLocation.objects.all(), ndma).query))
 
     def test_me_reports_who_can_approve_demands(self):
-        approver = location_user()
-        approver.profile.role = UserProfile.ROLE_APPROVER
-        self.assertTrue(user_info(approver)['can_approve_demands'])
         self.assertFalse(user_info(location_user())['can_approve_demands'])
+        self.assertTrue(user_info(self.user(UserProfile.ROLE_NDMA))['can_approve_demands'])
 
-    def test_approver_needs_a_storage_location(self):
+    def test_ndma_needs_no_storage_location(self):
+        UserProfile(role=UserProfile.ROLE_NDMA).clean()
         with self.assertRaises(ValidationError):
-            UserProfile(role=UserProfile.ROLE_APPROVER).clean()
+            UserProfile(role=UserProfile.ROLE_LOCATION).clean()
 
 
 class InventoryTransactionTests(SimpleTestCase):
@@ -104,14 +139,19 @@ class InventoryTransactionTests(SimpleTestCase):
             item_id=1, sub_cat_id=2, spec_id=3, status_id=1, quantity=5,
             from_storage_location_id=3, from_sto_shed_id=9, to_storage_location_id=1,
         )
-        self.assertEqual(stock_keys(txn), {(3, 9, 1, 2, 3, 1), (1, None, 1, 2, 3, 1)})
+        self.assertEqual(stock_keys(txn), {(3, 9, 1, 2, 3, 1, 1), (1, None, 1, 2, 3, 1, 1)})
+
+    def test_handing_ndma_stock_to_pdma_takes_it_from_ndma(self):
+        txn = InventoryTransaction(item_id=1, sub_cat_id=None, spec_id=None, status_id=1, quantity=5, owner_id=1,
+                                   from_owner_id=2, from_storage_location_id=6, to_storage_location_id=3)
+        self.assertEqual(stock_keys(txn), {(6, None, 1, None, None, 1, 2), (3, None, 1, None, None, 1, 1)})
 
     def test_status_change_takes_stock_from_the_old_status(self):
         txn = InventoryTransaction(
             item_id=1, sub_cat_id=None, spec_id=None, from_status_id=1, status_id=2, quantity=3,
             from_storage_location_id=1, from_sto_shed_id=4, to_storage_location_id=1, to_sto_shed_id=4,
         )
-        self.assertEqual(stock_keys(txn), {(1, 4, 1, None, None, 1), (1, 4, 1, None, None, 2)})
+        self.assertEqual(stock_keys(txn), {(1, 4, 1, None, None, 1, 1), (1, 4, 1, None, None, 2, 1)})
         self.assertEqual(sides_used(TransactionType.STATUS), ('from', 'to'))
 
     def test_receiving_side_is_not_limited_to_the_users_storage_location(self):

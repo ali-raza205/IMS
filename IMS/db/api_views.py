@@ -4,11 +4,13 @@ import logging
 import mimetypes
 
 from django.db import transaction
-from django.http import FileResponse, Http404
 from django.db.models import Count, F, Q, Sum
+from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404
-from rest_framework import viewsets
+from django.utils import timezone
+from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import SAFE_METHODS, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -16,6 +18,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import (
     Categories,
+    DispatchPurpose,
     InventoryTransaction,
     ItemSpec,
     ItemStatus,
@@ -25,6 +28,7 @@ from .models import (
     Party,
     Shed,
     StockBalance,
+    StockOwner,
     StorageLocation,
     StorageShed,
     StorageType,
@@ -35,6 +39,9 @@ from .permissions import (
     IsMasterOrCreateOnly,
     IsMasterOrReadOnly,
     LocationScopedMixin,
+    is_inspector,
+    is_master,
+    is_ndma,
     limit_to_location,
     sees_all_locations,
     user_location_id,
@@ -47,10 +54,12 @@ from .serializers import (
     ItemSubCategorySerializer,
     ItemsSerializer,
     LocationsSerializer,
+    DispatchPurposeSerializer,
     LoginSerializer,
     PartySerializer,
     ShedSerializer,
     StockBalanceSerializer,
+    StockOwnerSerializer,
     StorageTypeSerializer,
     StorageLocationSerializer,
     StorageShedSerializer,
@@ -58,6 +67,7 @@ from .serializers import (
     TransactionTypeSerializer,
     UnitsSerializer,
     check_stock,
+    needed_approval,
     delete_files,
     item_options,
     specs_for,
@@ -227,6 +237,19 @@ class ItemSpecViewSet(MasterDataViewSet):
         return active_only(queryset, self.request) if self.action == 'list' else queryset
 
 
+class DispatchPurposeViewSet(MasterDataViewSet):
+    """Why stock is dispatched for use: Relief Distribution, Rescue Operation..."""
+    queryset = DispatchPurpose.objects.order_by('purpose_name')
+    serializer_class = DispatchPurposeSerializer
+
+
+class StockOwnerViewSet(LogSubmitMixin, viewsets.ModelViewSet):
+    """Whose stock it is: PDMA or NDMA. Only master users change them."""
+    queryset = StockOwner.objects.order_by('owner_id')
+    serializer_class = StockOwnerSerializer
+    permission_classes = [IsAuthenticated, IsMasterOrReadOnly]
+
+
 class TransactionTypeViewSet(LogSubmitMixin, viewsets.ModelViewSet):
     """Donation, Procurement, NDMA, Dispatch, Internal Transfer, Opening Stock; only master users change them."""
     queryset = TransactionType.objects.order_by('type_id')
@@ -246,7 +269,7 @@ class ShedViewSet(MasterDataViewSet):
         queryset = super().get_queryset()
         user = self.request.user
         location_id = storage_location_param(self.request)
-        if not sees_all_locations(user):
+        if not sees_all_locations(user) and not is_ndma(user):  # NDMA keeps stock in any storage location
             own = user_location_id(user)
             if location_id is not None and location_id != own:
                 return queryset.none()
@@ -317,16 +340,36 @@ def filter_by_params(queryset, request, filters):
     return queryset
 
 
+def can_approve(user, txn):
+    """The inspection team approves status changes; the DG PDMA (master users) every other pending movement."""
+    if txn.txn_type.direction == TransactionType.STATUS:
+        return is_inspector(user)
+    return is_master(user)
+
+
+def awaiting_approval(transactions, user):
+    """Pending movements this user can approve."""
+    transactions = transactions.filter(approval_status=InventoryTransaction.PENDING)
+    if is_inspector(user):
+        return transactions.filter(txn_type__direction=TransactionType.STATUS)
+    if is_master(user):
+        return transactions.exclude(txn_type__direction=TransactionType.STATUS)
+    return transactions.none()
+
+
 class InventoryTransactionViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.ModelViewSet):
     """
     All incoming and outgoing stock movements. POST one line, or a list of lines that are saved together.
     Both the sending and the receiving storage location see a transaction; a storage location user changes only
     lines sent from their storage location, or received there from outside (donation, procurement, NDMA...).
-    Filters: ?txn_type, ?direction (in/out/transfer), ?party, ?item, ?sub_category, ?spec, ?status, ?storage_location,
-    ?date_from and ?date_to (YYYY-MM-DD).
+    Filters: ?txn_type, ?direction (in/out/transfer/status), ?party, ?owner, ?item, ?sub_category, ?spec, ?status,
+    ?storage_location, ?date_from and ?date_to (YYYY-MM-DD), ?approval_status (pending/approved/rejected),
+    ?awaiting_my_approval=true (what the DG PDMA or the inspection team can approve now).
+    POST /api/transactions/<id>/approve/ and /reject/ {"approval_remarks": "..."}: the DG PDMA (master users) for
+    warehouse movements and returns, the inspection team for status changes.
     """
     queryset = InventoryTransaction.objects.select_related(
-        'txn_type', 'item__item_category', 'item__unit', 'sub_cat', 'spec', 'status', 'party',
+        'txn_type', 'item__item_category', 'item__unit', 'sub_cat', 'spec', 'status', 'party', 'owner', 'from_owner',
         'from_storage_location', 'from_sto_shed__shed', 'to_storage_location', 'to_sto_shed__shed',
     ).order_by('-txn_date', '-txn_id')
     serializer_class = InventoryTransactionSerializer
@@ -337,7 +380,7 @@ class InventoryTransactionViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.
 
     def get_queryset(self):
         queryset = filter_by_params(super().get_queryset(), self.request, {
-            'txn_type': 'txn_type', 'party': 'party', 'item': 'item', 'sub_category': 'sub_cat', 'spec': 'spec',
+            'txn_type': 'txn_type', 'party': 'party', 'owner': 'owner', 'item': 'item', 'sub_category': 'sub_cat', 'spec': 'spec',
             'status': 'status',
         })
         params = self.request.query_params
@@ -350,6 +393,10 @@ class InventoryTransactionViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.
             queryset = queryset.filter(txn_date__gte=params['date_from'])
         if params.get('date_to'):
             queryset = queryset.filter(txn_date__lte=params['date_to'])
+        if params.get('approval_status'):
+            queryset = queryset.filter(approval_status=params['approval_status'])
+        if params.get('awaiting_my_approval') == 'true':
+            queryset = awaiting_approval(queryset, self.request.user)
         return queryset
 
     def get_serializer(self, *args, **kwargs):
@@ -375,6 +422,10 @@ class InventoryTransactionViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.
         self._save_with_images(super().perform_update, serializer)
 
     def perform_destroy(self, instance):
+        demand_issue = instance.demand_allocation_id is not None
+        if instance.approval_status == InventoryTransaction.APPROVED and needed_approval(
+                instance.txn_type, instance.from_storage_location, self.request.user, demand_issue)                 == InventoryTransaction.PENDING:
+            raise PermissionDenied('Approved movements are removed only by whoever approves them.')
         with transaction.atomic():
             keys = stock_keys(instance)
             files = [instance.picture.name, instance.receipt.name]
@@ -388,6 +439,30 @@ class InventoryTransactionViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.
             raise Http404(f'This transaction has no {field}.')
         content_type = mimetypes.guess_type(image.name)[0] or 'application/octet-stream'
         return FileResponse(image.open('rb'), content_type=content_type)
+
+    def _decide(self, approval_status):
+        txn = self.get_object()
+        if not can_approve(self.request.user, txn):
+            raise PermissionDenied('Status changes are approved by the inspection team, other movements by the '
+                                   'DG PDMA.')
+        if txn.approval_status != InventoryTransaction.PENDING:
+            raise serializers.ValidationError('Only pending movements can be approved or rejected.')
+        with transaction.atomic():
+            txn.approval_status = approval_status
+            txn.approved_by, txn.approved_at = self.request.user.id, timezone.now()
+            txn.approval_remarks = self.request.data.get('approval_remarks')
+            txn.save(update_fields=['approval_status', 'approved_by', 'approved_at', 'approval_remarks'])
+            if approval_status == InventoryTransaction.APPROVED:
+                check_stock(stock_keys(txn))
+        return Response(self.get_serializer(self.get_queryset().get(pk=txn.pk)).data)
+
+    @action(detail=True, methods=['post'])
+    def approve(self, request, pk=None):
+        return self._decide(InventoryTransaction.APPROVED)
+
+    @action(detail=True, methods=['post'])
+    def reject(self, request, pk=None):
+        return self._decide(InventoryTransaction.REJECTED)
 
     @action(detail=True)
     def picture(self, request, pk=None):
@@ -407,13 +482,14 @@ class StockViewSet(LocationScopedMixin, viewsets.ReadOnlyModelViewSet):
     """
     queryset = StockBalance.objects.select_related(
         'storage_location__location', 'sto_shed__shed', 'item__item_category', 'item__unit', 'sub_cat', 'spec', 'status',
+        'owner',
     ).order_by('storage_location', 'item__item_name', 'row_id')
     serializer_class = StockBalanceSerializer
 
     def get_queryset(self):
         return filter_by_params(super().get_queryset(), self.request, {
             'storage_location': 'storage_location', 'shed': 'sto_shed', 'item': 'item', 'sub_category': 'sub_cat',
-            'spec': 'spec', 'status': 'status', 'category': 'item__item_category',
+            'spec': 'spec', 'status': 'status', 'owner': 'owner', 'category': 'item__item_category',
         })
 
 
@@ -425,16 +501,18 @@ class TotalInventoryViewSet(viewsets.ViewSet):
     def list(self, request):
         stock = filter_by_params(limit_to_location(StockBalance.objects.all(), request.user), request, {
             'storage_location': 'storage_location', 'item': 'item', 'category': 'item__item_category', 'status': 'status',
+            'owner': 'owner',
         })
         inventory = (
             stock.values(
-                'item_id', 'sub_cat_id', 'spec_id', 'status_id',
+                'item_id', 'sub_cat_id', 'spec_id', 'status_id', 'owner_id',
                 item_name=F('item__item_name'),
                 item_code=F('item__item_code'),
                 category_name=F('item__item_category__category_name'),
                 sub_cat_name=F('sub_cat__sub_cat_name'),
                 spec_name=F('spec__spec_name'),
                 status_name=F('status__status_name'),
+                owner_name=F('owner__owner_name'),
                 unit=F('item__unit__unit_name'),
             )
             .annotate(total_quantity=Sum('quantity'), stock_entries=Count('row_id'))

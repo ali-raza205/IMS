@@ -142,15 +142,18 @@ class DemandDashboardView(APIView):
         approved = sum((row['approved'] for row in rows), ZERO)
         issued = sum((row['issued'] for row in rows), ZERO)
 
-        # Giving storage locations, from the allocations of these lines
+        # Giving storage locations and whose stock (PDMA, NDMA), from the allocations of these lines
         giving = {}
         allocations = DemandAllocation.objects.filter(line__in=lines.values('pk')).annotate(
             issued=Coalesce(Sum('transactions__quantity'), Value(ZERO), output_field=QUANTITY),
-        ).values('from_storage_location_id', 'from_storage_location__details', 'quantity', 'issued', 'line__status')
+        ).values('from_storage_location_id', 'from_storage_location__details', 'owner_id', 'owner__owner_name',
+                 'quantity', 'issued', 'line__status')
         for allocation in allocations:
-            group = giving.setdefault(allocation['from_storage_location_id'], {
+            group = giving.setdefault((allocation['from_storage_location_id'], allocation['owner_id']), {
                 'storage_location_id': allocation['from_storage_location_id'],
                 'storage_location_name': allocation['from_storage_location__details'],
+                'owner_id': allocation['owner_id'],
+                'owner_name': allocation['owner__owner_name'],
                 'allocations': 0, 'approved': ZERO, 'issued': ZERO, 'reserved': ZERO,
             })
             group['allocations'] += 1

@@ -25,12 +25,13 @@ DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 500
 
 DIRECTIONS = tuple(direction for direction, _ in TransactionType.DIRECTION_CHOICES)
+APPROVAL_STATUSES = tuple(status for status, _ in InventoryTransaction.APPROVAL_CHOICES)
 
 # Columns of a record row.
 RECORD_FIELDS = (
     'record_id', 'record_no', 'record_date', 'txn_type_id', 'txn_type_name', 'direction', 'party_name',
     'item_id', 'item_name', 'item_code', 'category_id', 'category_name',
-    'sub_cat_id', 'sub_cat_name', 'spec_id', 'spec_name', 'status_id', 'status_name',
+    'sub_cat_id', 'sub_cat_name', 'spec_id', 'spec_name', 'status_id', 'status_name', 'owner_id', 'owner_name',
     'st_loc_id', 'storage_location_name', 'location_id', 'location_name', 'shed_name',
     'quantity', 'unit_value', 'value', 'batch', 'manufacturing_date', 'expiry_date', 'expiry_status',
 )
@@ -79,6 +80,9 @@ def dashboard_filters(params):
     return {
         'txn_type': id_list(params, 'txn_type'),
         'party': id_list(params, 'party'),
+        'owner': id_list(params, 'owner'),
+        # Only approved movements count unless asked otherwise.
+        'approval_status': choice_list(params, 'approval_status', APPROVAL_STATUSES) or [InventoryTransaction.APPROVED],
         'direction': choice_list(params, 'direction', DIRECTIONS),
         'category': id_list(params, 'category'),
         'item': id_list(params, 'item'),
@@ -114,6 +118,7 @@ def filtered_records(user, filters, today):
         sub_cat_name=F('sub_cat__sub_cat_name'),
         spec_name=F('spec__spec_name'),
         status_name=F('status__status_name'),
+        owner_name=F('owner__owner_name'),
         st_loc_id=Coalesce('to_storage_location', 'from_storage_location'),
         storage_location_name=Coalesce('to_storage_location__details', 'from_storage_location__details'),
         location_id=Coalesce('to_storage_location__location', 'from_storage_location__location'),
@@ -134,6 +139,8 @@ def filtered_records(user, filters, today):
     lookups = {
         'txn_type': 'txn_type__in',
         'party': 'party__in',
+        'owner': 'owner__in',
+        'approval_status': 'approval_status__in',
         'direction': 'direction__in',
         'category': 'item__item_category__in',
         'item': 'item__in',
@@ -190,6 +197,8 @@ class DashboardView(APIView):
     @swagger_auto_schema(manual_parameters=[
         param('txn_type', openapi.TYPE_STRING, 'Transaction type id(s), e.g. 1 or 1,2 (default all)'),
         param('party', openapi.TYPE_STRING, 'Supplier / donor / NDMA party id(s)'),
+        param('owner', openapi.TYPE_STRING, 'Stock owner id(s): 1 PDMA, 2 NDMA'),
+        param('approval_status', openapi.TYPE_STRING, 'approved (default), pending or rejected (comma-separated for several)'),
         param('direction', openapi.TYPE_STRING, 'in, out or transfer (comma-separated for several; default all)'),
         param('category', openapi.TYPE_STRING, 'Category id(s), e.g. 2 or 2,5'),
         param('item', openapi.TYPE_STRING, 'Item id(s)'),
@@ -251,6 +260,7 @@ class DashboardView(APIView):
             'by_type': totals(records, 'txn_type_id', 'txn_type_name', 'direction'),
             'by_status': totals(records, 'status_id', 'status_name'),
             'by_party': totals(records, 'party_id', 'party_name'),
+            'by_owner': totals(records, 'owner_id', 'owner_name'),
             'by_category': totals(records, 'category_id', 'category_name'),
             'by_storage_location': totals(records, 'st_loc_id', 'storage_location_name', 'location_name'),
             'by_item': totals(records, 'item_id', 'item_name', 'item_code', 'category_name'),
