@@ -39,6 +39,7 @@ from .permissions import (
     IsMasterOrCreateOnly,
     IsMasterOrReadOnly,
     LocationScopedMixin,
+    is_district,
     is_inspector,
     is_master,
     is_ndma,
@@ -340,6 +341,13 @@ def filter_by_params(queryset, request, filters):
     return queryset
 
 
+def id_param_from_body(request, name):
+    try:
+        return int(request.data.get(name))
+    except (TypeError, ValueError):
+        return None
+
+
 def can_approve(user, txn):
     """The inspection team approves status changes; the DG PDMA (master users) every other pending movement."""
     if txn.txn_type.direction == TransactionType.STATUS:
@@ -366,7 +374,9 @@ class InventoryTransactionViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.
     ?storage_location, ?date_from and ?date_to (YYYY-MM-DD), ?approval_status (pending/approved/rejected),
     ?awaiting_my_approval=true (what the DG PDMA or the inspection team can approve now).
     POST /api/transactions/<id>/approve/ and /reject/ {"approval_remarks": "..."}: the DG PDMA (master users) for
-    warehouse movements and returns, the inspection team for status changes.
+    warehouse movements, returns, district to district dispatches and NDMA stock sent to PDMA (approve with
+    "to_storage_location": the receiving warehouse, and optionally "to_sto_shed"); the inspection team for status
+    changes.
     """
     queryset = InventoryTransaction.objects.select_related(
         'txn_type', 'item__item_category', 'item__unit', 'sub_cat', 'spec', 'status', 'party', 'owner', 'from_owner',
@@ -423,8 +433,10 @@ class InventoryTransactionViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.
 
     def perform_destroy(self, instance):
         demand_issue = instance.demand_allocation_id is not None
+        ndma_handover = instance.txn_type_id == TransactionType.DISPATCH and instance.from_owner_id == StockOwner.NDMA
         if instance.approval_status == InventoryTransaction.APPROVED and needed_approval(
-                instance.txn_type, instance.from_storage_location, self.request.user, demand_issue)                 == InventoryTransaction.PENDING:
+                instance.txn_type, instance.from_storage_location, instance.to_storage_location, self.request.user,
+                demand_issue, ndma_handover) == InventoryTransaction.PENDING:
             raise PermissionDenied('Approved movements are removed only by whoever approves them.')
         with transaction.atomic():
             keys = stock_keys(instance)
@@ -447,11 +459,20 @@ class InventoryTransactionViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.
                                    'DG PDMA.')
         if txn.approval_status != InventoryTransaction.PENDING:
             raise serializers.ValidationError('Only pending movements can be approved or rejected.')
+        fields = ['approval_status', 'approved_by', 'approved_at', 'approval_remarks']
+        if approval_status == InventoryTransaction.APPROVED and txn.txn_type_id == TransactionType.DISPATCH                 and txn.from_owner_id == StockOwner.NDMA:
+            # NDMA stock sent to PDMA: the DG chooses the receiving warehouse (and shed).
+            location = StorageLocation.objects.filter(pk=id_param_from_body(self.request, 'to_storage_location')).first()                 or txn.to_storage_location
+            if location is None or is_district(location):
+                raise serializers.ValidationError({'to_storage_location': 'Choose the PDMA warehouse that receives it.'})
+            shed = StorageShed.objects.filter(pk=id_param_from_body(self.request, 'to_sto_shed'), sto_loc=location).first()
+            txn.to_storage_location, txn.to_sto_shed = location, shed
+            fields += ['to_storage_location', 'to_sto_shed']
         with transaction.atomic():
             txn.approval_status = approval_status
             txn.approved_by, txn.approved_at = self.request.user.id, timezone.now()
             txn.approval_remarks = self.request.data.get('approval_remarks')
-            txn.save(update_fields=['approval_status', 'approved_by', 'approved_at', 'approval_remarks'])
+            txn.save(update_fields=fields)
             if approval_status == InventoryTransaction.APPROVED:
                 check_stock(stock_keys(txn))
         return Response(self.get_serializer(self.get_queryset().get(pk=txn.pk)).data)

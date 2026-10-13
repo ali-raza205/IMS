@@ -18,7 +18,15 @@ from .models import (
     UserProfile,
 )
 from .permissions import IsMasterOrCreateOnly, IsMasterOrReadOnly, can_decide_demand_line, limit_to_location
-from .serializers import InventoryTransactionSerializer, sides_used, stock_keys, user_info, user_role
+from .serializers import (
+    InventoryTransactionSerializer,
+    movement_errors,
+    needed_approval,
+    sides_used,
+    stock_keys,
+    user_info,
+    user_role,
+)
 
 
 def location_user(st_loc_id=3):
@@ -126,6 +134,53 @@ class DemandApprovalRoleTests(SimpleTestCase):
         UserProfile(role=UserProfile.ROLE_NDMA).clean()
         with self.assertRaises(ValidationError):
             UserProfile(role=UserProfile.ROLE_LOCATION).clean()
+
+
+class MovementRuleTests(SimpleTestCase):
+    warehouse = StorageLocation(st_loc_id=1, type_id=StorageType.WAREHOUSE)
+    warehouse2 = StorageLocation(st_loc_id=3, type_id=StorageType.WAREHOUSE)
+    district = StorageLocation(st_loc_id=2, type_id=StorageType.DISTRICT)
+    district2 = StorageLocation(st_loc_id=6, type_id=StorageType.DISTRICT)
+    department = SimpleNamespace(pk=50)
+
+    def errors(self, type_id, frm, to, party=None, ndma=False, owner=1, from_shed=None, to_shed=None):
+        return movement_errors(TransactionType(type_id=type_id), frm, to, from_shed, to_shed, party, ndma, owner)
+
+    def test_dispatch_goes_to_a_district_or_a_department(self):
+        self.assertEqual(self.errors(4, self.warehouse, self.district), {})
+        self.assertEqual(self.errors(4, self.district, self.district2), {})
+        self.assertEqual(self.errors(4, self.district, None, party=self.department), {})
+        self.assertIn('to_storage_location', self.errors(4, self.warehouse, self.warehouse2))  # that is shifting
+        self.assertIn('to_storage_location', self.errors(4, self.district, None))
+        self.assertIn('party', self.errors(4, self.district, self.district2, party=self.department))
+
+    def test_ndma_stock_is_dispatched_only_to_warehouses(self):
+        self.assertEqual(self.errors(4, self.warehouse, None, ndma=True, owner=2), {})
+        self.assertEqual(self.errors(4, self.warehouse, self.warehouse2, ndma=True, owner=2), {})
+        self.assertIn('to_storage_location', self.errors(4, self.warehouse, self.district, ndma=True, owner=2))
+
+    def test_internal_transfer_is_warehouse_to_warehouse(self):
+        self.assertEqual(self.errors(5, self.warehouse, self.warehouse2), {})
+        self.assertEqual(self.errors(5, self.warehouse, self.warehouse, from_shed=1, to_shed=2), {})
+        self.assertIn('txn_type', self.errors(5, self.warehouse, self.district))
+        self.assertIn('txn_type', self.errors(5, self.district, self.warehouse))
+        self.assertIn('to_storage_location', self.errors(5, self.warehouse, self.warehouse))
+
+    def test_returns(self):
+        self.assertEqual(self.errors(9, self.district, self.warehouse), {})
+        self.assertIn('to_storage_location', self.errors(9, self.district, self.district2))
+        self.assertEqual(self.errors(9, self.warehouse, None, owner=2), {})  # NDMA stock back to NDMA
+        self.assertIn('to_storage_location', self.errors(9, self.warehouse, None, owner=1))
+
+    def test_what_waits_for_approval(self):
+        user = location_user()
+        dispatch = TransactionType(type_id=4, direction=TransactionType.OUT)
+        self.assertEqual(needed_approval(dispatch, self.district, None, user), InventoryTransaction.APPROVED)
+        self.assertEqual(needed_approval(dispatch, self.district, self.district2, user), InventoryTransaction.PENDING)
+        self.assertEqual(needed_approval(dispatch, self.warehouse, self.district, user), InventoryTransaction.PENDING)
+        dg = SimpleNamespace(username='dg', is_superuser=True, profile=None)
+        self.assertEqual(needed_approval(dispatch, self.warehouse, self.district, dg), InventoryTransaction.APPROVED)
+        self.assertEqual(needed_approval(dispatch, self.warehouse, None, dg, ndma_handover=True), InventoryTransaction.PENDING)
 
 
 class InventoryTransactionTests(SimpleTestCase):

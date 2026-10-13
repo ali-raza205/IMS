@@ -437,45 +437,79 @@ def request_user_is_ndma(serializer):
 
 
 # Issues against demands: warehouse -> warehouse, warehouse -> district, district -> warehouse.
-ISSUE_TYPES = (TransactionType.INTERNAL_TRANSFER, TransactionType.DISPATCH_TO_DISTRICT, TransactionType.RETURN)
+ISSUE_TYPES = (TransactionType.INTERNAL_TRANSFER, TransactionType.DISPATCH, TransactionType.RETURN)
 
-# (from a district?, to a district?) of the movements between storage locations.
-MOVEMENT_KINDS = {
-    TransactionType.INTERNAL_TRANSFER: ((False, False), 'Internal Transfer (shifting) is from warehouse to warehouse or '
-                                        'shed to shed; to a district use Dispatch to District, back from one Return.'),
-    TransactionType.DISPATCH_TO_DISTRICT: ((False, True), 'Dispatch to District goes from a warehouse to a district.'),
-    TransactionType.RETURN: ((True, False), 'Return goes from a district back to a warehouse.'),
-}
+# Types that go to a storage location or out of the system: Dispatch (a district, or a department party) and
+# Return (a warehouse, or NDMA for NDMA stock).
+OPTIONAL_DESTINATION = (TransactionType.DISPATCH, TransactionType.RETURN)
 
 
 def movement_kind(from_location, to_location):
     """
-    Which movement a transfer is, by the kinds of its storage locations: the transfer type it must be
-    (Internal Transfer, Dispatch to District or Return), or None for district to district, which is not allowed.
+    The type of a movement between two storage locations, by their kinds: warehouse to warehouse is Internal
+    Transfer (shifting), warehouse to district Dispatch, district to warehouse Return; None for district to district,
+    which demands do not do.
     """
-    for type_id, (kinds, _) in MOVEMENT_KINDS.items():
-        if (is_district(from_location), is_district(to_location)) == kinds:
-            return type_id
-    return None
+    return {
+        (False, False): TransactionType.INTERNAL_TRANSFER,
+        (False, True): TransactionType.DISPATCH,
+        (True, False): TransactionType.RETURN,
+    }.get((is_district(from_location), is_district(to_location)))
 
 
-def needed_approval(txn_type, from_location, user, demand_issue=False):
+def needed_approval(txn_type, from_location, to_location, user, demand_issue=False, ndma_handover=False):
     """
-    PENDING when a movement waits for approval: status changes (inspection team), returns and every outgoing
-    movement of a warehouse (DG PDMA, unless the DG records it). Receipts, a district's own use, NDMA's own stock
+    PENDING when a movement waits for approval: status changes (inspection team); warehouse movements, returns,
+    district to district dispatches and NDMA stock sent to PDMA (DG PDMA, who chooses the receiving warehouse).
+    The DG's own movements, receipts, a district's dispatch to a department, NDMA's other movements of its stock
     and issues against approved demands are APPROVED at once.
     """
     if demand_issue or txn_type.direction == TransactionType.IN:
         return InventoryTransaction.APPROVED
     if txn_type.direction == TransactionType.STATUS:
         return InventoryTransaction.PENDING
-    if is_ndma(user):
+    if ndma_handover:
+        return InventoryTransaction.PENDING
+    if is_ndma(user) or is_master(user):
         return InventoryTransaction.APPROVED
     if txn_type.pk == TransactionType.RETURN:
         return InventoryTransaction.PENDING
-    if from_location is not None and not is_district(from_location):
-        return InventoryTransaction.APPROVED if is_master(user) else InventoryTransaction.PENDING
-    return InventoryTransaction.APPROVED
+    if is_district(from_location):
+        return InventoryTransaction.PENDING if to_location is not None else InventoryTransaction.APPROVED
+    return InventoryTransaction.PENDING if from_location is not None else InventoryTransaction.APPROVED
+
+
+def movement_errors(txn_type, from_location, to_location, from_shed, to_shed, party, ndma_handover, sent_owner_id):
+    """Where each type may go: {field: message} for a movement that breaks the rules."""
+    same_place = to_location is not None and to_location == from_location
+    if txn_type.pk == TransactionType.INTERNAL_TRANSFER:
+        if is_district(from_location) or is_district(to_location):
+            return {'txn_type': 'Internal Transfer (shifting) is only from warehouse to warehouse or shed to shed; '
+                                'use Dispatch to send to a district, Return to send back to a warehouse.'}
+        if same_place and (None in (from_shed, to_shed) or from_shed == to_shed):
+            return {'to_storage_location': 'Choose another warehouse, or another shed of this one.'}
+    elif txn_type.pk == TransactionType.DISPATCH:
+        if ndma_handover:
+            if party is not None or (to_location is not None and is_district(to_location)):
+                return {'to_storage_location': 'NDMA stock is dispatched only to PDMA warehouses; the DG PDMA '
+                                               'chooses which one.'}
+        elif to_location is not None:
+            if party is not None:
+                return {'party': 'Dispatch to a district or to a department, not both.'}
+            if not is_district(to_location):
+                return {'to_storage_location': 'Warehouse to warehouse is shifting: use Internal Transfer.'}
+            if same_place:
+                return {'to_storage_location': 'Choose another district.'}
+        elif party is None:
+            return {'to_storage_location': 'Choose the district or the department it goes to.'}
+    elif txn_type.pk == TransactionType.RETURN:
+        if is_district(from_location):
+            if to_location is None or is_district(to_location):
+                return {'to_storage_location': 'A district returns stock to a warehouse.'}
+        elif to_location is not None or sent_owner_id != StockOwner.NDMA:
+            return {'to_storage_location': 'PDMA returns only NDMA stock, to NDMA (leave the destination empty, '
+                                           'owner 2); districts return to warehouses.'}
+    return {}
 
 
 def item_option_errors(item, sub_cat, spec, require_choice):
@@ -542,11 +576,13 @@ class InventoryTransactionSerializer(LocationScopedFieldsMixin, serializers.Mode
     `sub_cat` and `spec` must belong to the item; new lines must pick them when the item has any.
     `status` (Serviceable, Non Serviceable...) is required on every new line. Stock is kept per status, so a dispatch
     or transfer takes stock of the status it names.
-    Districts manage their own stock: they Dispatch it for a `purpose` (required) and send it back with Return; the
-    DG PDMA asks for returns through demands. Warehouses move stock with Internal Transfer (warehouse to warehouse,
-    or shed to shed) and Dispatch to District. Warehouse movements and returns wait for DG PDMA approval
-    (`approval_status` pending) unless the DG records them; status changes wait for the inspection team. Pending
-    movements change no stock until approved but already hold the sent quantity.
+    Dispatch goes to a district (`to_storage_location`; stock moves there) or to a department (`party` of the Dispatch
+    type, with a `purpose`; stock leaves the system). Internal Transfer is only warehouse to warehouse or shed to shed.
+    Return goes from a district to a warehouse, or from PDMA to NDMA with NDMA stock (no destination). NDMA dispatches
+    its stock to PDMA without a warehouse; the DG PDMA chooses it when approving, and it becomes PDMA's stock.
+    Warehouse movements, returns and district to district dispatches wait for DG PDMA approval (`approval_status`
+    pending) unless the DG records them; status changes wait for the inspection team. Pending movements change no
+    stock until approved but already hold the sent quantity. A district's stock is moved only by the district.
     `owner` is whose stock it is (1 PDMA, the default, or 2 NDMA); stock is kept per owner in every storage location.
     Only NDMA users record or move NDMA stock (or hand stock over with `from_owner`); PDMA gets it through demands.
     Status Change lines move stock at one storage location from `from_status` to `status` (e.g. damaged boats from
@@ -650,6 +686,8 @@ class InventoryTransactionSerializer(LocationScopedFieldsMixin, serializers.Mode
         errors = {}
         txn_type = value('txn_type')
         used = sides_used(txn_type.direction)
+        if txn_type.pk in OPTIONAL_DESTINATION:
+            used = ('from', 'to')  # the receiving side may stay empty (out of the system)
         for side in SIDES:
             location_name, shed_name = side_fields(side)
             location, shed = value(location_name), value(shed_name)
@@ -668,45 +706,50 @@ class InventoryTransactionSerializer(LocationScopedFieldsMixin, serializers.Mode
                 if shed is None and shed_name not in attrs:
                     shed = attrs[shed_name] = value('from_sto_shed')
             if location is None:
-                errors[location_name] = 'This field is required.'
+                if not (side == 'to' and txn_type.pk in OPTIONAL_DESTINATION):
+                    errors[location_name] = 'This field is required.'
             elif shed is not None and shed.sto_loc_id != location.pk:
                 errors[shed_name] = 'This shed is not at that storage location.'
         from_location, to_location = value('from_storage_location'), value('to_storage_location')
         request = self.context.get('request')
+        user = request.user if request is not None else None
         demand_issue = bool(self.context.get('demand_issue')) or getattr(instance, 'demand_allocation_id', None)
-        if txn_type.direction == TransactionType.TRANSFER and from_location is not None and not errors:
-            if from_location == to_location:
-                # Shifting from one shed to another of the same warehouse.
-                from_shed, to_shed = value('from_sto_shed'), value('to_sto_shed')
-                if txn_type.pk != TransactionType.INTERNAL_TRANSFER or None in (from_shed, to_shed) \
-                        or from_shed == to_shed:
-                    errors['to_storage_location'] = 'Choose another storage location, or another shed of it.'
-            kind = movement_kind(from_location, to_location)
-            if kind is None:
-                errors['to_storage_location'] = 'Stock does not move from one district to another.'
-            elif txn_type.pk in MOVEMENT_KINDS and kind != txn_type.pk:
-                errors['txn_type'] = MOVEMENT_KINDS[txn_type.pk][1]
+        party = value('party')
+
+        # Whose stock is sent: NDMA users send NDMA stock; a Dispatch of it hands it over to PDMA.
+        if instance is None and 'owner' not in attrs and request_user_is_ndma(self):
+            attrs['owner'] = StockOwner.objects.get(pk=StockOwner.NDMA)
+        if instance is None and txn_type.pk == TransactionType.DISPATCH and request_user_is_ndma(self):
+            attrs['from_owner'] = StockOwner.objects.get(pk=StockOwner.NDMA)
+            attrs['owner'] = StockOwner.objects.get(pk=StockOwner.PDMA)
+        owner, from_owner = value('owner'), value('from_owner')
+        sent_owner_id = getattr(from_owner or owner, 'pk', StockOwner.PDMA)
+        ndma_handover = txn_type.pk == TransactionType.DISPATCH and sent_owner_id == StockOwner.NDMA
+        return_to_ndma = txn_type.pk == TransactionType.RETURN and to_location is None
+
+        if from_location is not None and not errors and not demand_issue:
+            errors.update(movement_errors(txn_type, from_location, to_location, value('from_sto_shed'),
+                                          value('to_sto_shed'), party, ndma_handover, sent_owner_id))
 
         # A district's stock is its own: only the district moves it (the DG asks for returns through demands).
         if is_district(from_location) and not demand_issue and request is not None \
-                and not is_ndma(request.user) \
+                and not (is_ndma(request.user) and sent_owner_id == StockOwner.NDMA) \
                 and (sees_all_locations(request.user) or user_location_id(request.user) != from_location.pk):
             errors['from_storage_location'] = ('District stock is managed by the district itself; '
                                                'the DG PDMA requests a return through a demand.')
 
         # NDMA's stock (in any storage location) is recorded, moved or handed over only by NDMA users, or issued
         # through a demand NDMA approved. `from_owner` is the owner before, when ownership changes hands.
-        if instance is None and 'owner' not in attrs and request_user_is_ndma(self):
-            attrs['owner'] = StockOwner.objects.get(pk=StockOwner.NDMA)  # NDMA records its own stock
-        owner, from_owner = value('owner'), value('from_owner')
         if from_owner is not None and owner is not None and from_owner == owner:
             errors['from_owner'] = 'Choose a different owner than the new one, or leave it out.'
         request = self.context.get('request')
         ndma_stock = StockOwner.NDMA in {getattr(owner, 'pk', None), getattr(from_owner, 'pk', None)}
         if instance is not None:
             ndma_stock |= StockOwner.NDMA in {instance.owner_id, instance.from_owner_id}
-        if ndma_stock and not self.context.get('demand_issue') and not (request and is_ndma(request.user)):
-            errors['owner'] = 'Only NDMA records or moves NDMA stock; it is released to PDMA through demands.'
+        if ndma_stock and not self.context.get('demand_issue') and not return_to_ndma \
+                and not (request and is_ndma(request.user)):
+            errors['owner'] = ('Only NDMA records or moves NDMA stock; PDMA gets it through demands or NDMA\'s '
+                               'dispatches, and returns it to NDMA with Return.')
         if not ndma_stock and request and is_ndma(request.user):
             errors['owner'] = 'NDMA records only NDMA stock (owner 2).'
 
@@ -723,24 +766,23 @@ class InventoryTransactionSerializer(LocationScopedFieldsMixin, serializers.Mode
         elif from_status is not None:
             errors['from_status'] = f'Not used for {txn_type.type_name}.'
 
-        # The supplier, donor or NDMA must be one of the transaction type's parties; new lines must pick one
-        # when the type has any. A dispatch records who received it.
-        party = value('party')
+        # The supplier, donor, NDMA or receiving department must be one of the transaction type's parties; new
+        # receipts must pick one when the type has any (a Dispatch picks a district or a department instead).
         if party is not None and party.txn_type_id != txn_type.pk:
             errors['party'] = f'Not a party of {txn_type.type_name}.'
-        if instance is None:
-            if party is None and txn_type.parties.filter(is_active=True).exists():
-                errors['party'] = f'Choose the {txn_type.type_name} party.'
-            if txn_type.pk == TransactionType.DISPATCH and not value('issued_to'):
-                errors['issued_to'] = 'Required for Dispatch.'
-            if txn_type.pk == TransactionType.DISPATCH and value('purpose') is None:
-                errors['purpose'] = 'Choose the purpose of the dispatch.'
+        if instance is None and party is None and txn_type.direction == TransactionType.IN \
+                and txn_type.parties.filter(is_active=True).exists():
+            errors['party'] = f'Choose the {txn_type.type_name} party.'
+        if instance is None and txn_type.pk == TransactionType.DISPATCH and party is not None \
+                and value('purpose') is None:
+            errors['purpose'] = 'Choose the purpose of the dispatch.'
         if value('purpose') is not None and txn_type.pk != TransactionType.DISPATCH:
             errors['purpose'] = f'Not used for {txn_type.type_name}.'
 
         # Whether it waits for approval; a change to a movement that needs approval needs it again.
         if not errors and request is not None:
-            attrs['approval_status'] = needed_approval(txn_type, from_location, request.user, demand_issue)
+            attrs['approval_status'] = needed_approval(txn_type, from_location, to_location, request.user,
+                                                       demand_issue, ndma_handover)
             if attrs['approval_status'] == InventoryTransaction.PENDING:
                 attrs['approved_by'] = attrs['approved_at'] = None
 

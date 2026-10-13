@@ -100,9 +100,9 @@ class ItemSpec(models.Model):
 
 class TransactionType(models.Model):
     """
-    Donation, Procurement, NDMA and Opening Stock bring stock in, Dispatch takes it out,
-    Internal Transfer moves it from one storage location to another, Status Change moves it from one status
-    to another (e.g. Serviceable to Non Serviceable) at one storage location.
+    Donation, Procurement, NDMA and Opening Stock bring stock in. Dispatch sends it to a district or to a department,
+    Internal Transfer shifts it between warehouses or sheds, Return sends it back (district to warehouse, PDMA to
+    NDMA), Status Change moves it from one status to another (e.g. Serviceable to Repairable) at one location.
     """
     IN = 'in'
     OUT = 'out'
@@ -118,7 +118,6 @@ class TransactionType(models.Model):
     INTERNAL_TRANSFER = 5
     OPENING_STOCK = 6
     STATUS_CHANGE = 7
-    DISPATCH_TO_DISTRICT = 8
     RETURN = 9
 
     type_id = models.BigAutoField(primary_key=True)

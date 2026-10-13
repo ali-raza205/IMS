@@ -1,0 +1,1837 @@
+{
+  "info": {
+    "_postman_id": "84493497-3ad3-4a8b-b9a6-d0886956229e",
+    "name": "IMS - Demands screen",
+    "description": "# Demands screen API\n\nA demand is a request for items for a storage location. The DG PDMA refers each line and approves, rejects or rationalizes it from warehouse stock; lines requested from NDMA are decided by NDMA only; return requests sent to a district are decided by that district. Warehouses only issue.\n\n**Demand status:** pending → in_process → approved → partly_issued → completed (or rejected).\n**Line status:** pending / approved / rejected; `rationalized` when approved for less.\n\n## Roles\n| Variable | Role | Account |\n|---|---|---|\n| `token_dg` | DG PDMA (master) | approves warehouse movements and returns, refers and decides demands |\n| `token_warehouse` | Storage location user at a **Warehouse** | records movements (wait for DG approval), issues demands |\n| `token_district` | Storage location user at a **District** | uses its own stock, returns stock, decides return requests |\n| `token_ndma` | NDMA | only NDMA-owned stock and demand lines referred to NDMA |\n| `token_inspection` | Inspection team | approves status changes |\n\n## Variables\n`item`, `sub_cat`, `spec` = Boat / Fiberglass / 19 ft; `warehouse` = Lahore Warehouse (1) gives; `district` = Lahore district (2) demands. Change them to match the test data.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "00 Log in",
+      "description": "One login per role used below.",
+      "item": [
+        {
+          "name": "Login as dg",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/login/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "login",
+                ""
+              ]
+            },
+            "description": "Log in and keep the access token for the **dg** requests. Send `Authorization: Bearer <access>` on every other call; refresh it with `POST /api/auth/refresh/ {\"refresh\": \"...\"}` when it expires.\n\nThe `user` object says what the screens should show: `role`, `storage_location_id` / `storage_location_name` (none for DG PDMA, NDMA and the inspection team) and `can_approve_demands`.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{user_dg}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('token_dg', pm.response.json().access);",
+                  "pm.test('role returned', () => pm.expect(pm.response.json().user.role).to.be.a('string'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login as warehouse",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/login/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "login",
+                ""
+              ]
+            },
+            "description": "Log in and keep the access token for the **warehouse** requests. Send `Authorization: Bearer <access>` on every other call; refresh it with `POST /api/auth/refresh/ {\"refresh\": \"...\"}` when it expires.\n\nThe `user` object says what the screens should show: `role`, `storage_location_id` / `storage_location_name` (none for DG PDMA, NDMA and the inspection team) and `can_approve_demands`.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{user_warehouse}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('token_warehouse', pm.response.json().access);",
+                  "pm.test('role returned', () => pm.expect(pm.response.json().user.role).to.be.a('string'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login as district",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/login/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "login",
+                ""
+              ]
+            },
+            "description": "Log in and keep the access token for the **district** requests. Send `Authorization: Bearer <access>` on every other call; refresh it with `POST /api/auth/refresh/ {\"refresh\": \"...\"}` when it expires.\n\nThe `user` object says what the screens should show: `role`, `storage_location_id` / `storage_location_name` (none for DG PDMA, NDMA and the inspection team) and `can_approve_demands`.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{user_district}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('token_district', pm.response.json().access);",
+                  "pm.test('role returned', () => pm.expect(pm.response.json().user.role).to.be.a('string'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login as ndma",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/login/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "login",
+                ""
+              ]
+            },
+            "description": "Log in and keep the access token for the **ndma** requests. Send `Authorization: Bearer <access>` on every other call; refresh it with `POST /api/auth/refresh/ {\"refresh\": \"...\"}` when it expires.\n\nThe `user` object says what the screens should show: `role`, `storage_location_id` / `storage_location_name` (none for DG PDMA, NDMA and the inspection team) and `can_approve_demands`.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{user_ndma}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('token_ndma', pm.response.json().access);",
+                  "pm.test('role returned', () => pm.expect(pm.response.json().user.role).to.be.a('string'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login as inspection",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/login/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "login",
+                ""
+              ]
+            },
+            "description": "Log in and keep the access token for the **inspection** requests. Send `Authorization: Bearer <access>` on every other call; refresh it with `POST /api/auth/refresh/ {\"refresh\": \"...\"}` when it expires.\n\nThe `user` object says what the screens should show: `role`, `storage_location_id` / `storage_location_name` (none for DG PDMA, NDMA and the inspection team) and `can_approve_demands`.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{user_inspection}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('token_inspection', pm.response.json().access);",
+                  "pm.test('role returned', () => pm.expect(pm.response.json().user.role).to.be.a('string'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Who am I (district)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/auth/me/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "me",
+                ""
+              ]
+            },
+            "description": "`can_approve_demands` is true for the DG PDMA and NDMA: show the decision inbox. Storage location users raise demands, issue (warehouses) and decide return requests (districts).",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_district}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "01 Setup (test data only)",
+      "description": "Puts NDMA stock in the warehouse so the NDMA steps have something to give. Not part of the screen.",
+      "item": [
+        {
+          "name": "NDMA stock at the warehouse",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/transactions/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "transactions",
+                ""
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_ndma}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"txn_type\": 6,\n  \"txn_date\": \"2026-10-13\",\n  \"item\": \"{{item}}\",\n  \"sub_cat\": \"{{sub_cat}}\",\n  \"spec\": \"{{spec}}\",\n  \"status\": 1,\n  \"quantity\": 5,\n  \"to_storage_location\": \"{{warehouse}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "PDMA stock at the warehouse",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/transactions/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "transactions",
+                ""
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_dg}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"txn_type\": 6,\n  \"txn_date\": \"2026-10-13\",\n  \"item\": \"{{item}}\",\n  \"sub_cat\": \"{{sub_cat}}\",\n  \"spec\": \"{{spec}}\",\n  \"status\": 1,\n  \"quantity\": 20,\n  \"to_storage_location\": \"{{warehouse}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "02 Raise a demand (district / warehouse user)",
+      "description": "Any user raises a demand for their own storage location (left out = their own); the DG PDMA chooses one.\nItem lines use the same item → sub category → spec dropdowns as transactions (`/api/items/<id>/options/`).\nA demand can be edited or deleted while every line is still pending.",
+      "item": [
+        {
+          "name": "Raise a demand",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/demands/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "demands",
+                ""
+              ]
+            },
+            "description": "Response: `demand_no` (DMD-YYYY-NNNNN), `status` (pending), and `lines[]` with `line_id`, `status`, `referred_to`, `referred_owner`, `available_quantity`, `approved_quantity`, `issued_quantity`, `rationalized`, `allocations[]`, `can_decide`.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_district}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"purpose\": \"Flood response\",\n  \"needed_by\": \"2026-10-20\",\n  \"remarks\": \"Urgent\",\n  \"lines\": [\n    {\n      \"item\": \"{{item}}\",\n      \"sub_cat\": \"{{sub_cat}}\",\n      \"spec\": \"{{spec}}\",\n      \"quantity\": 10\n    },\n    {\n      \"item\": \"{{item}}\",\n      \"sub_cat\": \"{{sub_cat}}\",\n      \"spec\": \"{{spec}}\",\n      \"quantity\": 3,\n      \"remarks\": \"From NDMA if possible\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('demand', pm.response.json().demand_id);",
+                  "pm.collectionVariables.set('line1', pm.response.json().lines[0].line_id);",
+                  "pm.collectionVariables.set('line2', pm.response.json().lines[1].line_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "My demands",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/demands/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "demands",
+                ""
+              ]
+            },
+            "description": "Filters: `status` (pending, in_process, approved, partly_issued, completed, rejected), `for_storage_location`, `referred_to`, `awaiting_my_decision=true`.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_district}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Edit while pending",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/demands/{{demand}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "demands",
+                "{{demand}}",
+                ""
+              ]
+            },
+            "description": "Send `lines` to replace all lines.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_district}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"purpose\": \"Flood response (updated)\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Line needs sub category / spec",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/demands/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "demands",
+                ""
+              ]
+            },
+            "description": "Validation shown per line.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_district}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"lines\": [\n    {\n      \"item\": \"{{item}}\",\n      \"quantity\": 1\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 DG PDMA reviews and refers",
+      "description": "The DG sees every pending line (`awaiting_my_decision=true`), the quantity available on each line, and\nrefers it: to a warehouse (PDMA stock), to NDMA (`\"owner\": 2`, a request to NDMA) or to a district (a return request).",
+      "item": [
+        {
+          "name": "DG inbox",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/demand-lines/?awaiting_my_decision=true",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "demand-lines",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "awaiting_my_decision",
+                  "value": "true"
+                }
+              ]
+            },
+            "description": "Lines the DG can decide now. `available_quantity` = stock that can still be given (not promised to other demands) by the warehouses (or NDMA / the district the line is referred to).",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_dg}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Availability per storage location",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/demand-lines/{{line1}}/availability/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "demand-lines",
+                "{{line1}}",
+                "availability",
+                ""
+              ]
+            },
+            "description": "Rows: `storage_location_id`, `storage_location_name`, `is_district`, `owner_id`, `owner_name`, `on_hand`, `reserved`, `available`. Use it to choose where to approve from.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_dg}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refer line 1 to the warehouse",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/demand-lines/{{line1}}/refer/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "demand-lines",
+                "{{line1}}",
+                "refer",
+                ""
+              ]
+            },
+            "description": "Also `POST /api/demands/<id>/refer/ {\"referred_to\": id, \"owner\": 1|2, \"lines\": [ids]}` for several lines.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_dg}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"referred_to\": \"{{warehouse}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Request line 2 from NDMA",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/demand-lines/{{line2}}/refer/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "demand-lines",
+                "{{line2}}",
+                "refer",
+                ""
+              ]
+            },
+            "description": "Only NDMA decides it now; it leaves the DG inbox.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_dg}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"owner\": 2\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('referred to NDMA', () => pm.expect(pm.response.json().referred_owner).to.eql(2));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "04 Decide (DG PDMA / NDMA)",
+      "description": "Approve with allocations `[{\"from_storage_location\": id, \"quantity\": n}]` (several = split over storage locations);\napproving less than demanded is **rationalizing** (`rationalized: true`). Approved quantities are reserved until issued.",
+      "item": [
+        {
+          "name": "DG approves 6 of 10 (rationalized)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/demand-lines/{{line1}}/approve/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "demand-lines",
+                "{{line1}}",
+                "approve",
+                ""
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_dg}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"allocations\": [\n    {\n      \"from_storage_location\": \"{{warehouse}}\",\n      \"quantity\": 6\n    }\n  ],\n  \"decision_remarks\": \"Partial due to stock\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('rationalized', () => pm.expect(pm.response.json().rationalized).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DG cannot decide an NDMA line",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/demand-lines/{{line2}}/approve/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "demand-lines",
+                "{{line2}}",
+                "approve",
+                ""
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_dg}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"allocations\": [\n    {\n      \"from_storage_location\": \"{{warehouse}}\",\n      \"quantity\": 1\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 403', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "NDMA inbox",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/demand-lines/?awaiting_my_decision=true",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "demand-lines",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "awaiting_my_decision",
+                  "value": "true"
+                }
+              ]
+            },
+            "description": "Only lines referred to NDMA.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_ndma}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "NDMA availability (NDMA stock only)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/demand-lines/{{line2}}/availability/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "demand-lines",
+                "{{line2}}",
+                "availability",
+                ""
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_ndma}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "NDMA approves 3 from its stock",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/demand-lines/{{line2}}/approve/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "demand-lines",
+                "{{line2}}",
+                "approve",
+                ""
+              ]
+            },
+            "description": "`owner` 2 is implied for NDMA lines.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_ndma}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"allocations\": [\n    {\n      \"from_storage_location\": \"{{warehouse}}\",\n      \"quantity\": 3\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Warehouse cannot approve",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/demand-lines/{{line1}}/approve/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "demand-lines",
+                "{{line1}}",
+                "approve",
+                ""
+              ]
+            },
+            "description": "Warehouses only issue.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_warehouse}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"allocations\": [\n    {\n      \"from_storage_location\": \"{{warehouse}}\",\n      \"quantity\": 1\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 403', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "05 Issue (giving warehouse)",
+      "description": "The giving storage location issues approved quantities, at once or in parts. Each issue is a transaction\n(Dispatch to a district / Internal Transfer between warehouses / Return to a warehouse, chosen automatically) linked to the demand and approved at once.\n`allocation` is needed when a line is split over several storage locations; `quantity` defaults to what is left.",
+      "item": [
+        {
+          "name": "Issue 4 of the 6",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/demand-lines/{{line1}}/issue/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "demand-lines",
+                "{{line1}}",
+                "issue",
+                ""
+              ]
+            },
+            "description": "Response: `transaction` (with `demand_no`) and the updated `line` (`issued_quantity`).",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_warehouse}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantity\": 4,\n  \"txn_date\": \"2026-10-13\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+                  "pm.test('Dispatch', () => pm.expect(pm.response.json().transaction.txn_type_name).to.eql('Dispatch'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Issue the rest",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/demand-lines/{{line1}}/issue/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "demand-lines",
+                "{{line1}}",
+                "issue",
+                ""
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_warehouse}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Issue the NDMA line (becomes PDMA stock at the district)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/demand-lines/{{line2}}/issue/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "demand-lines",
+                "{{line2}}",
+                "issue",
+                ""
+              ]
+            },
+            "description": "`from_owner_name` NDMA → `owner_name` PDMA.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_warehouse}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+                  "pm.test('handed over', () => pm.expect(pm.response.json().transaction.from_owner).to.eql(2));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Demand is completed",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/demands/{{demand}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "demands",
+                "{{demand}}",
+                ""
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_district}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('completed', () => pm.expect(pm.response.json().status).to.eql('completed'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "06 Return request (DG → district)",
+      "description": "Stock at a district is the district's. The DG asks for it back with a demand for a warehouse, referred to the\ndistrict; **the district** accepts, rejects or rationalizes it and issues the Return.",
+      "item": [
+        {
+          "name": "DG raises a return request for the warehouse",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/demands/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "demands",
+                ""
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_dg}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"for_storage_location\": \"{{warehouse}}\",\n  \"purpose\": \"Reposition stock\",\n  \"lines\": [\n    {\n      \"item\": \"{{item}}\",\n      \"sub_cat\": \"{{sub_cat}}\",\n      \"spec\": \"{{spec}}\",\n      \"quantity\": 3\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('return_line', pm.response.json().lines[0].line_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refer it to the district",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/demand-lines/{{return_line}}/refer/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "demand-lines",
+                "{{return_line}}",
+                "refer",
+                ""
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_dg}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"referred_to\": \"{{district}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "District inbox",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/demand-lines/?awaiting_my_decision=true",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "demand-lines",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "awaiting_my_decision",
+                  "value": "true"
+                }
+              ]
+            },
+            "description": "Return requests asked from this district.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_district}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "District agrees to return 2 of 3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/demand-lines/{{return_line}}/approve/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "demand-lines",
+                "{{return_line}}",
+                "approve",
+                ""
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_district}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"allocations\": [\n    {\n      \"from_storage_location\": \"{{district}}\",\n      \"quantity\": 2\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "District issues the return",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/demand-lines/{{return_line}}/issue/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "demand-lines",
+                "{{return_line}}",
+                "issue",
+                ""
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_district}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+                  "pm.test('Return', () => pm.expect(pm.response.json().transaction.txn_type_name).to.eql('Return'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "07 Reject and reports",
+      "description": "",
+      "item": [
+        {
+          "name": "Raise one to reject",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/demands/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "demands",
+                ""
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_district}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"lines\": [\n    {\n      \"item\": \"{{item}}\",\n      \"sub_cat\": \"{{sub_cat}}\",\n      \"spec\": \"{{spec}}\",\n      \"quantity\": 1\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('reject_line', pm.response.json().lines[0].line_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DG rejects it",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/demand-lines/{{reject_line}}/reject/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "demand-lines",
+                "{{reject_line}}",
+                "reject",
+                ""
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_dg}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"decision_remarks\": \"No stock\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Demand dashboard",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/dashboard/demands/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "dashboard",
+                "demands",
+                ""
+              ]
+            },
+            "description": "`summary` (awaiting_my_decision, approval_rate, fulfilment_rate, overdue_demands...), `by_status`, `by_demanding_location`, `by_giving_location`, `by_item`, `by_month`, `recent`. Filters: `date_from`, `date_to`, `storage_location`, `location`, `referred_to`, `category`, `item`.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_dg}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://127.0.0.1:8009"
+    },
+    {
+      "key": "item",
+      "value": "1"
+    },
+    {
+      "key": "sub_cat",
+      "value": "1"
+    },
+    {
+      "key": "spec",
+      "value": "1"
+    },
+    {
+      "key": "warehouse",
+      "value": "1"
+    },
+    {
+      "key": "district",
+      "value": "2"
+    }
+  ]
+}
