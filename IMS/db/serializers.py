@@ -340,25 +340,34 @@ def sides_used(direction):
         TransactionType.IN: ('to',),
         TransactionType.OUT: ('from',),
         TransactionType.TRANSFER: ('from', 'to'),
+        TransactionType.STATUS: ('from', 'to'),
     }[direction]
 
 
 def stock_keys(txn):
-    """(storage location, shed, item, sub category, spec, status) of each side the transaction touches."""
+    """
+    (storage location, shed, item, sub category, spec, status) of each side the transaction touches.
+    The sending side of a status change is at its old status (`from_status`).
+    """
     keys = set()
     for side in SIDES:
         location_name, shed_name = side_fields(side)
         location_id = getattr(txn, f'{location_name}_id')
         if location_id is not None:
+            status_id = txn.from_status_id if side == 'from' and txn.from_status_id else txn.status_id
             keys.add((location_id, getattr(txn, f'{shed_name}_id'),
-                      txn.item_id, txn.sub_cat_id, txn.spec_id, txn.status_id))
+                      txn.item_id, txn.sub_cat_id, txn.spec_id, status_id))
     return keys
 
 
 def on_hand(location_id, shed_id, item_id, sub_cat_id, spec_id, status_id):
     """Quantity at a storage location, or at one of its sheds when `shed_id` is given."""
-    rows = InventoryTransaction.objects.filter(item_id=item_id, sub_cat_id=sub_cat_id, spec_id=spec_id, status_id=status_id)
-    received, sent = Q(to_storage_location_id=location_id), Q(from_storage_location_id=location_id)
+    rows = InventoryTransaction.objects.filter(item_id=item_id, sub_cat_id=sub_cat_id, spec_id=spec_id)
+    # Received at the row's status; sent at the old status of a status change, else at the row's status.
+    received = Q(to_storage_location_id=location_id, status_id=status_id)
+    sent = Q(from_storage_location_id=location_id) & (
+        Q(from_status_id=status_id) | Q(from_status__isnull=True, status_id=status_id)
+    )
     if shed_id is not None:
         received &= Q(to_sto_shed_id=shed_id)
         sent &= Q(from_sto_shed_id=shed_id)
@@ -445,6 +454,11 @@ class InventoryTransactionSerializer(LocationScopedFieldsMixin, serializers.Mode
     `party` (supplier, donor, NDMA) must be a party of the transaction type; new lines must pick one when the type
     has any. New Dispatch lines need `issued_to`.
     `sub_cat` and `spec` must belong to the item; new lines must pick them when the item has any.
+    `status` (Serviceable, Non Serviceable...) is required on every new line. Stock is kept per status, so a dispatch
+    or transfer takes stock of the status it names.
+    Status Change lines move stock at one storage location from `from_status` to `status` (e.g. damaged boats from
+    Serviceable to Non Serviceable); give `from_storage_location` (storage location users may leave it out) and
+    optionally `from_sto_shed` / `to_sto_shed`; the receiving side defaults to the same storage location and shed.
     No save may leave less than nothing in stock.
     `picture` (the goods) and `receipt` are image uploads (multipart/form-data; send an empty value to remove one).
     They are stored as JPEG and come back as URLs of /api/transactions/<id>/picture/ and /receipt/, which need a login.
@@ -457,6 +471,7 @@ class InventoryTransactionSerializer(LocationScopedFieldsMixin, serializers.Mode
     sub_cat_name = name_field('sub_cat.sub_cat_name')
     spec_name = name_field('spec.spec_name')
     status_name = name_field('status.status_name')
+    from_status_name = name_field('from_status.status_name')
     from_storage_location_name = name_field('from_storage_location.details')
     from_shed_name = name_field('from_sto_shed.shed.shed_name')
     to_storage_location_name = name_field('to_storage_location.details')
@@ -472,7 +487,8 @@ class InventoryTransactionSerializer(LocationScopedFieldsMixin, serializers.Mode
         fields = "__all__"
         read_only_fields = ['created_by', 'created_at', 'demand_allocation']
         list_serializer_class = InventoryTransactionListSerializer
-        extra_kwargs = {'status': {'required': False}}
+        # Chosen on every new line (Serviceable, Non Serviceable...); there is no default.
+        extra_kwargs = {'status': {'required': True, 'allow_null': False}}
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -548,13 +564,32 @@ class InventoryTransactionSerializer(LocationScopedFieldsMixin, serializers.Mode
                 location = attrs[location_name] = shed.sto_loc
             if location is None and side == used[0] and self.own_location_id() is not None:
                 location = attrs[location_name] = StorageLocation.objects.get(pk=self.own_location_id())
+            if side == 'to' and txn_type.direction == TransactionType.STATUS:
+                # A status change stays where it is unless another shed there is given.
+                if location is None:
+                    location = attrs[location_name] = value('from_storage_location')
+                if shed is None and shed_name not in attrs:
+                    shed = attrs[shed_name] = value('from_sto_shed')
             if location is None:
                 errors[location_name] = 'This field is required.'
             elif shed is not None and shed.sto_loc_id != location.pk:
                 errors[shed_name] = 'This shed is not at that storage location.'
-        if len(used) == 2 and value('from_storage_location') is not None \
+        if txn_type.direction == TransactionType.TRANSFER and value('from_storage_location') is not None \
                 and value('from_storage_location') == value('to_storage_location'):
             errors['to_storage_location'] = 'Must be a different storage location.'
+
+        # A status change stays at one storage location (and, unless another is given, in the same shed) and
+        # moves stock from `from_status` to `status`.
+        from_status = value('from_status')
+        if txn_type.direction == TransactionType.STATUS:
+            if from_status is None:
+                errors['from_status'] = 'Choose the status the stock has now.'
+            elif from_status == value('status'):
+                errors['status'] = 'Choose a different status than the current one.'
+            if value('from_storage_location') != value('to_storage_location'):
+                errors['to_storage_location'] = 'A status change stays at the same storage location.'
+        elif from_status is not None:
+            errors['from_status'] = f'Not used for {txn_type.type_name}.'
 
         # The supplier, donor or NDMA must be one of the transaction type's parties; new lines must pick one
         # when the type has any. A dispatch records who received it.

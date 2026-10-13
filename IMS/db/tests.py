@@ -106,12 +106,20 @@ class InventoryTransactionTests(SimpleTestCase):
         )
         self.assertEqual(stock_keys(txn), {(3, 9, 1, 2, 3, 1), (1, None, 1, 2, 3, 1)})
 
+    def test_status_change_takes_stock_from_the_old_status(self):
+        txn = InventoryTransaction(
+            item_id=1, sub_cat_id=None, spec_id=None, from_status_id=1, status_id=2, quantity=3,
+            from_storage_location_id=1, from_sto_shed_id=4, to_storage_location_id=1, to_sto_shed_id=4,
+        )
+        self.assertEqual(stock_keys(txn), {(1, 4, 1, None, None, 1), (1, 4, 1, None, None, 2)})
+        self.assertEqual(sides_used(TransactionType.STATUS), ('from', 'to'))
+
     def test_receiving_side_is_not_limited_to_the_users_storage_location(self):
         request = SimpleNamespace(user=location_user())
         fields = InventoryTransactionSerializer(context={'request': request}).fields
         self.assertIn('"storage_location"."st_loc_id" = 3', str(fields['from_storage_location'].queryset.query))
         self.assertNotIn('WHERE', str(fields['to_storage_location'].queryset.all().query))
-        self.assertFalse(fields['status'].required)
+        self.assertTrue(fields['status'].required)
 
 
 class DashboardFilterTests(SimpleTestCase):

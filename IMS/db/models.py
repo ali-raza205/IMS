@@ -84,12 +84,14 @@ class ItemSpec(models.Model):
 class TransactionType(models.Model):
     """
     Donation, Procurement, NDMA and Opening Stock bring stock in, Dispatch takes it out,
-    Internal Transfer moves it from one storage location to another.
+    Internal Transfer moves it from one storage location to another, Status Change moves it from one status
+    to another (e.g. Serviceable to Non Serviceable) at one storage location.
     """
     IN = 'in'
     OUT = 'out'
     TRANSFER = 'transfer'
-    DIRECTION_CHOICES = [(IN, 'Incoming'), (OUT, 'Outgoing'), (TRANSFER, 'Transfer')]
+    STATUS = 'status'
+    DIRECTION_CHOICES = [(IN, 'Incoming'), (OUT, 'Outgoing'), (TRANSFER, 'Transfer'), (STATUS, 'Status change')]
 
     # type_id of the rows added by migration 0008
     DONATION = 1
@@ -98,6 +100,7 @@ class TransactionType(models.Model):
     DISPATCH = 4
     INTERNAL_TRANSFER = 5
     OPENING_STOCK = 6
+    STATUS_CHANGE = 7
 
     type_id = models.BigAutoField(primary_key=True)
     type_name = models.CharField(unique=True, max_length=50)
@@ -148,6 +151,10 @@ class InventoryTransaction(models.Model):
     sub_cat = models.ForeignKey(ItemSubCategory, models.DO_NOTHING, blank=True, null=True)
     spec = models.ForeignKey(ItemSpec, models.DO_NOTHING, blank=True, null=True)
     status = models.ForeignKey(ItemStatus, models.DO_NOTHING, default=ItemStatus.SERVICEABLE)
+    # Status Change only: the status the stock had before; `status` is the new one.
+    from_status = models.ForeignKey(
+        ItemStatus, models.DO_NOTHING, blank=True, null=True, related_name='status_changes_from'
+    )
     quantity = models.DecimalField(max_digits=15, decimal_places=2)
     unit_price = models.DecimalField(max_digits=15, decimal_places=2, blank=True, null=True)
     from_storage_location = models.ForeignKey(
