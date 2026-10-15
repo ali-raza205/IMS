@@ -20,6 +20,7 @@ from .models import (
     Categories,
     DispatchPurpose,
     InventoryTransaction,
+    ItemCondition,
     ItemSpec,
     ItemStatus,
     ItemSubCategory,
@@ -50,6 +51,7 @@ from .permissions import (
 from .serializers import (
     CategoriesSerializer,
     InventoryTransactionSerializer,
+    ItemConditionSerializer,
     ItemSpecSerializer,
     ItemStatusSerializer,
     ItemSubCategorySerializer,
@@ -144,6 +146,19 @@ def id_param(request, name):
 def storage_location_param(request):
     """The `?storage_location=<id>` filter, or None."""
     return id_param(request, 'storage_location')
+
+
+class ItemConditionViewSet(MasterDataViewSet):
+    """GET /api/item-condition/?status=<id> lists the conditions to choose from under a status."""
+    queryset = ItemCondition.objects.select_related('status').order_by('status', 'condition_id')
+    serializer_class = ItemConditionSerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        status_id = id_param(self.request, 'status')
+        if status_id is not None:
+            queryset = queryset.filter(status_id=status_id)
+        return active_only(queryset, self.request) if self.action == 'list' else queryset
 
 
 class ItemsViewSet(MasterDataViewSet):
@@ -379,7 +394,8 @@ class InventoryTransactionViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.
     changes.
     """
     queryset = InventoryTransaction.objects.select_related(
-        'txn_type', 'item__item_category', 'item__unit', 'sub_cat', 'spec', 'status', 'party', 'owner', 'from_owner',
+        'txn_type', 'item__item_category', 'item__unit', 'sub_cat', 'spec', 'status', 'condition', 'party', 'owner',
+        'from_owner',
         'from_storage_location', 'from_sto_shed__shed', 'to_storage_location', 'to_sto_shed__shed',
     ).order_by('-txn_date', '-txn_id')
     serializer_class = InventoryTransactionSerializer
@@ -390,7 +406,7 @@ class InventoryTransactionViewSet(LogSubmitMixin, LocationScopedMixin, viewsets.
 
     def get_queryset(self):
         queryset = filter_by_params(super().get_queryset(), self.request, {
-            'txn_type': 'txn_type', 'party': 'party', 'owner': 'owner', 'item': 'item', 'sub_category': 'sub_cat', 'spec': 'spec',
+            'txn_type': 'txn_type', 'party': 'party', 'owner': 'owner', 'condition': 'condition', 'item': 'item', 'sub_category': 'sub_cat', 'spec': 'spec',
             'status': 'status',
         })
         params = self.request.query_params
@@ -503,14 +519,15 @@ class StockViewSet(LocationScopedMixin, viewsets.ReadOnlyModelViewSet):
     """
     queryset = StockBalance.objects.select_related(
         'storage_location__location', 'sto_shed__shed', 'item__item_category', 'item__unit', 'sub_cat', 'spec', 'status',
-        'owner',
+        'condition', 'owner',
     ).order_by('storage_location', 'item__item_name', 'row_id')
     serializer_class = StockBalanceSerializer
 
     def get_queryset(self):
         return filter_by_params(super().get_queryset(), self.request, {
             'storage_location': 'storage_location', 'shed': 'sto_shed', 'item': 'item', 'sub_category': 'sub_cat',
-            'spec': 'spec', 'status': 'status', 'owner': 'owner', 'category': 'item__item_category',
+            'spec': 'spec', 'status': 'status', 'condition': 'condition', 'owner': 'owner',
+            'category': 'item__item_category',
         })
 
 
@@ -522,11 +539,11 @@ class TotalInventoryViewSet(viewsets.ViewSet):
     def list(self, request):
         stock = filter_by_params(limit_to_location(StockBalance.objects.all(), request.user), request, {
             'storage_location': 'storage_location', 'item': 'item', 'category': 'item__item_category', 'status': 'status',
-            'owner': 'owner',
+            'owner': 'owner', 'condition': 'condition',
         })
         inventory = (
             stock.values(
-                'item_id', 'sub_cat_id', 'spec_id', 'status_id', 'owner_id',
+                'item_id', 'sub_cat_id', 'spec_id', 'status_id', 'condition_id', 'owner_id',
                 item_name=F('item__item_name'),
                 item_code=F('item__item_code'),
                 category_name=F('item__item_category__category_name'),
@@ -534,6 +551,7 @@ class TotalInventoryViewSet(viewsets.ViewSet):
                 spec_name=F('spec__spec_name'),
                 status_name=F('status__status_name'),
                 owner_name=F('owner__owner_name'),
+                condition_name=F('condition__condition_name'),
                 unit=F('item__unit__unit_name'),
             )
             .annotate(total_quantity=Sum('quantity'), stock_entries=Count('row_id'))

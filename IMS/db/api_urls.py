@@ -6,6 +6,7 @@ from .api_views import (
     CategoriesViewSet,
     DispatchPurposeViewSet,
     InventoryTransactionViewSet,
+    ItemConditionViewSet,
     ItemSpecViewSet,
     ItemStatusViewSet,
     ItemSubCategoryViewSet,
@@ -33,6 +34,7 @@ router = DefaultRouter()
 
 router.register(r'categories', CategoriesViewSet)
 router.register(r'item-status', ItemStatusViewSet)
+router.register(r'item-condition', ItemConditionViewSet)
 router.register(r'stock-owner', StockOwnerViewSet)
 router.register(r'dispatch-purpose', DispatchPurposeViewSet)
 router.register(r'items', ItemsViewSet)

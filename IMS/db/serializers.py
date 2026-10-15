@@ -1,3 +1,4 @@
+import calendar
 import io
 import logging
 from pathlib import PurePath
@@ -14,6 +15,7 @@ from .models import (
     Categories,
     DispatchPurpose,
     InventoryTransaction,
+    ItemCondition,
     ItemSpec,
     ItemStatus,
     ItemSubCategory,
@@ -113,6 +115,23 @@ class ItemStatusSerializer(serializers.ModelSerializer):
     class Meta:
         model = ItemStatus
         fields = "__all__"
+
+
+class ItemConditionSerializer(serializers.ModelSerializer):
+    """A condition under a status, e.g. Non Serviceable -> Expired. Names are unique per status."""
+    status_name = name_field('status.status_name')
+
+    class Meta:
+        model = ItemCondition
+        fields = "__all__"
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        status = attrs.get('status', getattr(self.instance, 'status', None))
+        name = attrs['condition_name'] = clean_name(attrs.get('condition_name', getattr(self.instance, 'condition_name', '')))
+        if name_taken(self, ItemCondition.objects.filter(status=status), 'condition_name', name):
+            raise serializers.ValidationError({'condition_name': f'{status.status_name} already has this condition.'})
+        return attrs
 
 
 class UnitsSerializer(serializers.ModelSerializer):
@@ -215,6 +234,7 @@ class StockBalanceSerializer(serializers.ModelSerializer):
     sub_cat_name = name_field('sub_cat.sub_cat_name')
     spec_name = name_field('spec.spec_name')
     status_name = name_field('status.status_name')
+    condition_name = name_field('condition.condition_name')
     owner_name = name_field('owner.owner_name')
     unit_name = name_field('item.unit.unit_name')
 
@@ -235,6 +255,8 @@ class TotalInventorySerializer(serializers.Serializer):
     spec_name = serializers.CharField(allow_null=True)
     status_id = serializers.IntegerField()
     status_name = serializers.CharField()
+    condition_id = serializers.IntegerField()
+    condition_name = serializers.CharField()
     owner_id = serializers.IntegerField()
     owner_name = serializers.CharField()
     total_quantity = serializers.DecimalField(max_digits=15, decimal_places=2)
@@ -379,8 +401,9 @@ def sides_used(direction):
 
 def stock_keys(txn):
     """
-    (storage location, shed, item, sub category, spec, status, owner) of each side the transaction touches.
-    The sending side is at the old status (`from_status`) and of the old owner (`from_owner`) when they change.
+    (storage location, shed, item, sub category, spec, status, owner, condition) of each side the transaction touches.
+    The sending side is at the old status and condition (`from_status`, `from_condition`) and of the old owner
+    (`from_owner`) when they change.
     """
     keys = set()
     for side in SIDES:
@@ -389,22 +412,25 @@ def stock_keys(txn):
         if location_id is not None:
             status_id = txn.from_status_id if side == 'from' and txn.from_status_id else txn.status_id
             owner_id = txn.from_owner_id if side == 'from' and txn.from_owner_id else txn.owner_id
+            condition_id = txn.from_condition_id if side == 'from' and txn.from_condition_id else txn.condition_id
             keys.add((location_id, getattr(txn, f'{shed_name}_id'),
-                      txn.item_id, txn.sub_cat_id, txn.spec_id, status_id, owner_id))
+                      txn.item_id, txn.sub_cat_id, txn.spec_id, status_id, owner_id, condition_id))
     return keys
 
 
-def on_hand(location_id, shed_id, item_id, sub_cat_id, spec_id, status_id, owner_id):
-    """Quantity of one owner at a storage location, or at one of its sheds when `shed_id` is given."""
+def on_hand(location_id, shed_id, item_id, sub_cat_id, spec_id, status_id, owner_id, condition_id):
+    """Quantity of one owner and condition at a storage location, or at one of its sheds when `shed_id` is given."""
     rows = InventoryTransaction.objects.filter(item_id=item_id, sub_cat_id=sub_cat_id, spec_id=spec_id) \
         .exclude(approval_status=InventoryTransaction.REJECTED)
     # Received at the row's status and owner once approved; sent (approved or still pending, which holds the stock)
     # at the old status and owner when they change, else at the row's.
-    received = Q(to_storage_location_id=location_id, status_id=status_id, owner_id=owner_id,
+    received = Q(to_storage_location_id=location_id, status_id=status_id, owner_id=owner_id, condition_id=condition_id,
                  approval_status=InventoryTransaction.APPROVED)
     sent = Q(from_storage_location_id=location_id) & (
         Q(from_status_id=status_id) | Q(from_status__isnull=True, status_id=status_id)
-    ) & (Q(from_owner_id=owner_id) | Q(from_owner__isnull=True, owner_id=owner_id))
+    ) & (Q(from_owner_id=owner_id) | Q(from_owner__isnull=True, owner_id=owner_id)) & (
+        Q(from_condition_id=condition_id) | Q(from_condition__isnull=True, condition_id=condition_id)
+    )
     if shed_id is not None:
         received &= Q(to_sto_shed_id=shed_id)
         sent &= Q(from_sto_shed_id=shed_id)
@@ -427,8 +453,21 @@ def check_stock(keys):
                 place = StorageShed.objects.get(pk=shed) if shed else StorageLocation.objects.get(pk=location_id)
                 raise serializers.ValidationError({
                     'quantity': f'Not enough stock at {place.details or place}: this would leave {quantity} '
-                                f'of this item, sub category, spec, status and owner.',
+                                f'of this item, sub category, spec, status, condition and owner.',
                 })
+
+
+def only_condition(status):
+    """The condition to fill in when the status has exactly one active condition (Serviceable: Ready to Use)."""
+    conditions = list(status.conditions.filter(is_active=True)[:2])
+    return conditions[0] if len(conditions) == 1 else None
+
+
+def add_months(day, months):
+    """`day` plus a number of months, kept within the month (31 Jan + 1 month = 28/29 Feb)."""
+    month_index = day.month - 1 + months
+    year, month = day.year + month_index // 12, month_index % 12 + 1
+    return day.replace(year=year, month=month, day=min(day.day, calendar.monthrange(year, month)[1]))
 
 
 def request_user_is_ndma(serializer):
@@ -574,7 +613,9 @@ class InventoryTransactionSerializer(LocationScopedFieldsMixin, serializers.Mode
     `party` (supplier, donor, NDMA) must be a party of the transaction type; new lines must pick one when the type
     has any. New Dispatch lines need `issued_to`.
     `sub_cat` and `spec` must belong to the item; new lines must pick them when the item has any.
-    `status` (Serviceable, Non Serviceable...) is required on every new line. Stock is kept per status, so a dispatch
+    `status` (Serviceable, Non Serviceable) is required on every new line, with its `condition` (Ready to Use;
+    Repairable, Expired, Beyond Repair), filled in when the status has only one. `shelf_life_months` with a
+    `manufacturing_date` sets the `expiry_date` when none is given. Stock is kept per status, so a dispatch
     or transfer takes stock of the status it names.
     Dispatch goes to a district (`to_storage_location`; stock moves there) or to a department (`party` of the Dispatch
     type, with a `purpose`; stock leaves the system). Internal Transfer is only warehouse to warehouse or shed to shed.
@@ -601,6 +642,8 @@ class InventoryTransactionSerializer(LocationScopedFieldsMixin, serializers.Mode
     spec_name = name_field('spec.spec_name')
     status_name = name_field('status.status_name')
     from_status_name = name_field('from_status.status_name')
+    condition_name = name_field('condition.condition_name')
+    from_condition_name = name_field('from_condition.condition_name')
     owner_name = name_field('owner.owner_name')
     from_owner_name = name_field('from_owner.owner_name')
     from_storage_location_name = name_field('from_storage_location.details')
@@ -621,7 +664,11 @@ class InventoryTransactionSerializer(LocationScopedFieldsMixin, serializers.Mode
                             'approval_status', 'approved_by', 'approved_at', 'approval_remarks']
         list_serializer_class = InventoryTransactionListSerializer
         # Chosen on every new line (Serviceable, Non Serviceable...); there is no default.
-        extra_kwargs = {'status': {'required': True, 'allow_null': False}}
+        extra_kwargs = {
+            'status': {'required': True, 'allow_null': False},
+            'condition': {'required': False},
+            'shelf_life_months': {'min_value': 1},
+        }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -755,16 +802,45 @@ class InventoryTransactionSerializer(LocationScopedFieldsMixin, serializers.Mode
 
         # A status change stays at one storage location (and, unless another is given, in the same shed) and
         # moves stock from `from_status` to `status`.
+        # The condition (Ready to Use, Expired, Repairable...) belongs to the status; with only one under the status
+        # it is filled in. A status change moves stock from (from_status, from_condition) to (status, condition).
+        status = value('status')
+        if instance is None and 'condition' not in attrs and status is not None:
+            attrs['condition'] = only_condition(status)
+        condition = value('condition')
+        if condition is None:
+            errors['condition'] = f'Choose the condition of the {status.status_name} stock.' if status else 'Required.'
+        elif status is not None and condition.status_id != status.pk:
+            errors['condition'] = f'Not a condition of {status.status_name}.'
         from_status = value('from_status')
         if txn_type.direction == TransactionType.STATUS:
+            if from_status is not None and instance is None and 'from_condition' not in attrs:
+                attrs['from_condition'] = only_condition(from_status)
+            from_condition = value('from_condition')
             if from_status is None:
                 errors['from_status'] = 'Choose the status the stock has now.'
-            elif from_status == value('status'):
-                errors['status'] = 'Choose a different status than the current one.'
+            elif from_condition is None:
+                errors['from_condition'] = f'Choose the condition the {from_status.status_name} stock has now.'
+            elif from_condition.status_id != from_status.pk:
+                errors['from_condition'] = f'Not a condition of {from_status.status_name}.'
+            elif (from_status, from_condition) == (status, condition):
+                errors['condition'] = 'Choose a different status or condition than the current one.'
             if value('from_storage_location') != value('to_storage_location'):
                 errors['to_storage_location'] = 'A status change stays at the same storage location.'
-        elif from_status is not None:
-            errors['from_status'] = f'Not used for {txn_type.type_name}.'
+        else:
+            if from_status is not None:
+                errors['from_status'] = f'Not used for {txn_type.type_name}.'
+            if value('from_condition') is not None:
+                errors['from_condition'] = f'Not used for {txn_type.type_name}.'
+
+        # Shelf life in months from manufacturing sets the expiry date when none is given.
+        # Checked only when the dates are entered or changed, so older records with odd dates can still be edited.
+        if instance is None or {'manufacturing_date', 'expiry_date', 'shelf_life_months'} & set(attrs):
+            manufactured, expiry = value('manufacturing_date'), value('expiry_date')
+            if value('shelf_life_months') and manufactured and not expiry:
+                expiry = attrs['expiry_date'] = add_months(manufactured, value('shelf_life_months'))
+            if manufactured and expiry and expiry < manufactured:
+                errors['expiry_date'] = 'The expiry date is before the manufacturing date.'
 
         # The supplier, donor, NDMA or receiving department must be one of the transaction type's parties; new
         # receipts must pick one when the type has any (a Dispatch picks a district or a department instead).

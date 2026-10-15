@@ -1,6 +1,6 @@
 {
   "info": {
-    "_postman_id": "84493497-3ad3-4a8b-b9a6-d0886956229e",
+    "_postman_id": "4ba767bf-b47d-4c49-97bb-b7fb36e5d935",
     "name": "IMS - Demands screen",
     "description": "# Demands screen API\n\nA demand is a request for items for a storage location. The DG PDMA refers each line and approves, rejects or rationalizes it from warehouse stock; lines requested from NDMA are decided by NDMA only; return requests sent to a district are decided by that district. Warehouses only issue.\n\n**Demand status:** pending → in_process → approved → partly_issued → completed (or rejected).\n**Line status:** pending / approved / rejected; `rationalized` when approved for less.\n\n## Roles\n| Variable | Role | Account |\n|---|---|---|\n| `token_dg` | DG PDMA (master) | approves warehouse movements and returns, refers and decides demands |\n| `token_warehouse` | Storage location user at a **Warehouse** | records movements (wait for DG approval), issues demands |\n| `token_district` | Storage location user at a **District** | uses its own stock, returns stock, decides return requests |\n| `token_ndma` | NDMA | only NDMA-owned stock and demand lines referred to NDMA |\n| `token_inspection` | Inspection team | approves status changes |\n\n## Variables\n`item`, `sub_cat`, `spec` = Boat / Fiberglass / 19 ft; `warehouse` = Lahore Warehouse (1) gives; `district` = Lahore district (2) demands. Change them to match the test data.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"

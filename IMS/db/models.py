@@ -21,10 +21,9 @@ class Categories(models.Model):
 
 
 class ItemStatus(models.Model):
-    """Serviceable (1) or Non Serviceable (2)."""
+    """Serviceable (1) or Non Serviceable (2); the item's condition is the next level (ItemCondition)."""
     SERVICEABLE = 1
     NON_SERVICEABLE = 2
-    REPAIRABLE = 3
 
     status_id = models.BigAutoField(primary_key=True)
     status_name = models.TextField()
@@ -48,6 +47,26 @@ class StockOwner(models.Model):
 
     def __str__(self):
         return self.owner_name
+
+
+class ItemCondition(models.Model):
+    """
+    The condition of stock under its status, like sub categories under items: Serviceable -> Ready to Use;
+    Non Serviceable -> Repairable, Expired, Beyond Repair.
+    """
+    READY_TO_USE = 1
+    REPAIRABLE = 2
+    EXPIRED = 3
+    BEYOND_REPAIR = 4
+
+    condition_id = models.BigAutoField(primary_key=True)
+    condition_name = models.CharField(max_length=100)
+    status = models.ForeignKey(ItemStatus, models.DO_NOTHING, related_name='conditions')
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        managed = False
+        db_table = 'item_condition'
 
 
 class Items(models.Model):
@@ -185,9 +204,13 @@ class InventoryTransaction(models.Model):
     sub_cat = models.ForeignKey(ItemSubCategory, models.DO_NOTHING, blank=True, null=True)
     spec = models.ForeignKey(ItemSpec, models.DO_NOTHING, blank=True, null=True)
     status = models.ForeignKey(ItemStatus, models.DO_NOTHING, default=ItemStatus.SERVICEABLE)
-    # Status Change only: the status the stock had before; `status` is the new one.
+    condition = models.ForeignKey(ItemCondition, models.DO_NOTHING, related_name='transactions')
+    # Status Change only: the status and condition the stock had before; `status` and `condition` are the new ones.
     from_status = models.ForeignKey(
         ItemStatus, models.DO_NOTHING, blank=True, null=True, related_name='status_changes_from'
+    )
+    from_condition = models.ForeignKey(
+        ItemCondition, models.DO_NOTHING, blank=True, null=True, related_name='status_changes_from'
     )
     # Whose stock this is (PDMA or NDMA); `from_owner` is the owner before when ownership changes hands.
     owner = models.ForeignKey(StockOwner, models.DO_NOTHING, default=StockOwner.PDMA, related_name='transactions')
@@ -215,6 +238,8 @@ class InventoryTransaction(models.Model):
     batch_no = models.CharField(max_length=100, blank=True, null=True)
     manufacturing_date = models.DateField(blank=True, null=True)
     expiry_date = models.DateField(blank=True, null=True)
+    # How long the items keep, from manufacturing; sets `expiry_date` when that is not given.
+    shelf_life_months = models.PositiveIntegerField(blank=True, null=True)
     remarks = models.TextField(blank=True, null=True)
     purpose = models.ForeignKey(DispatchPurpose, models.DO_NOTHING, blank=True, null=True)
     # Pending movements count for nothing until approved: warehouse movements and returns by DG PDMA (master users),
@@ -315,6 +340,7 @@ class StockBalance(models.Model):
     sub_cat = models.ForeignKey(ItemSubCategory, models.DO_NOTHING, blank=True, null=True)
     spec = models.ForeignKey(ItemSpec, models.DO_NOTHING, blank=True, null=True)
     status = models.ForeignKey(ItemStatus, models.DO_NOTHING)
+    condition = models.ForeignKey(ItemCondition, models.DO_NOTHING)
     owner = models.ForeignKey(StockOwner, models.DO_NOTHING)
     quantity = models.DecimalField(max_digits=20, decimal_places=2)
 

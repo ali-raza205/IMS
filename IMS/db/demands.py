@@ -29,6 +29,7 @@ from .models import (
     DemandAllocation,
     DemandLine,
     InventoryTransaction,
+    ItemCondition,
     ItemStatus,
     StockBalance,
     StockOwner,
@@ -80,12 +81,12 @@ def reserved_quantities(line):
 
 def availability(line):
     """
-    Serviceable stock of the line's item per storage location (other than the demanding one) and owner (PDMA, NDMA):
+    Serviceable, ready to use stock of the line's item per storage location (other than the demanding one) and owner (PDMA, NDMA):
     on hand, reserved for other approved demands and still available, most available first.
     """
     on_hand = (
         StockBalance.objects
-        .filter(status_id=ItemStatus.SERVICEABLE, **item_key(line))
+        .filter(status_id=ItemStatus.SERVICEABLE, condition_id=ItemCondition.READY_TO_USE, **item_key(line))
         .exclude(storage_location_id=line.demand.for_storage_location_id)
         .values('storage_location_id', 'storage_location__details', 'storage_location__location__location_name',
                 'storage_location__type_id', 'owner_id', 'owner__owner_name')
@@ -639,7 +640,7 @@ class DemandLineViewSet(LogSubmitMixin, viewsets.ReadOnlyModelViewSet):
             'txn_type': movement_kind(allocation.from_storage_location, line.demand.for_storage_location),
             'txn_date': data.validated_data.get('txn_date') or timezone.localdate(),
             'item': line.item_id, 'sub_cat': line.sub_cat_id, 'spec': line.spec_id,
-            'status': ItemStatus.SERVICEABLE, 'quantity': quantity,
+            'status': ItemStatus.SERVICEABLE, 'condition': ItemCondition.READY_TO_USE, 'quantity': quantity,
             # Issued stock becomes PDMA's; NDMA stock is handed over on the way.
             'owner': StockOwner.PDMA,
             'from_owner': allocation.owner_id if allocation.owner_id != StockOwner.PDMA else None,

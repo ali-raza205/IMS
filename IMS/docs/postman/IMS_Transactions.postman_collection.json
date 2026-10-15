@@ -1,6 +1,6 @@
 {
   "info": {
-    "_postman_id": "ceebdad2-0431-489a-89c7-f50623724c61",
+    "_postman_id": "94c007fb-5127-40b7-8f90-03405415946a",
     "name": "IMS - Transactions screen",
     "description": "# Transactions screen API\n\nEvery stock movement is one row of `/api/transactions/`. This collection follows the screen: log in, fill the form, record receipts, movements that need approval, district use and returns, then lists, stock and errors. Run it top to bottom against a **test** server; it passes ids between requests.\n\n## Roles\n| Variable | Role | Account |\n|---|---|---|\n| `token_dg` | DG PDMA (master) | approves warehouse movements and returns, refers and decides demands |\n| `token_warehouse` | Storage location user at a **Warehouse** | records movements (wait for DG approval), issues demands |\n| `token_district` | Storage location user at a **District** | uses its own stock, returns stock, decides return requests |\n| `token_ndma` | NDMA | only NDMA-owned stock and demand lines referred to NDMA |\n| `token_inspection` | Inspection team | approves status changes |\n\n## Variables\n`item`, `sub_cat`, `spec` = Boat / Fiberglass / 19 ft; `warehouse` = Lahore Warehouse (1), `warehouse2` = Muzaffargarh Warehouse (3), `district` = Lahore district (2), `district2` = Bahawalpur district (6). Change them to match the test data.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
@@ -305,7 +305,7 @@
     },
     {
       "name": "01 Form lookups",
-      "description": "Fill the transaction form's dropdowns. Lookups are readable by every logged-in user.\n\n| Field | Source | Notes |\n|---|---|---|\n| `txn_type` | `/api/transaction-type/` | `direction` decides which location fields to show (see folder 02) |\n| `status` | `/api/item-status/` | **required on every new line**: 1 Serviceable, 2 Non Serviceable, 3 Repairable |\n| `owner` | `/api/stock-owner/` | 1 PDMA (default), 2 NDMA; only NDMA users record NDMA stock |\n| `purpose` | `/api/dispatch-purpose/` | **required for a Dispatch to a department** |\n| `party` | `/api/parties/?txn_type=<type>` | loads with the chosen type: supplier (Procurement), donor (Donation), NDMA (NDMA), department (Dispatch) |\n| `item` → `sub_cat` → `spec` | `/api/items/` then `/api/items/<id>/options/` | choose sub category and spec when the item has them |\n| storage locations | `/api/storage-location/` | `type_name` District / Warehouse decides what needs approval |\n| sheds | `/api/storage-shed/?storage_location=<id>` | optional; a shed number (1 for Shed-1) is also accepted |\n",
+      "description": "Fill the transaction form's dropdowns. Lookups are readable by every logged-in user.\n\n| Field | Source | Notes |\n|---|---|---|\n| `txn_type` | `/api/transaction-type/` | `direction` decides which location fields to show (see folder 02) |\n| `status` | `/api/item-status/` | **required on every new line**: 1 Serviceable, 2 Non Serviceable |\n| `condition` | `/api/item-condition/?status=<status>` | Serviceable: Ready to Use (filled in when left out); Non Serviceable: Repairable, Expired, Beyond Repair (required) |\n| `shelf_life_months` | number | optional; with `manufacturing_date` it sets `expiry_date` when none is given |\n| `owner` | `/api/stock-owner/` | 1 PDMA (default), 2 NDMA; only NDMA users record NDMA stock |\n| `purpose` | `/api/dispatch-purpose/` | **required for a Dispatch to a department** |\n| `party` | `/api/parties/?txn_type=<type>` | loads with the chosen type: supplier (Procurement), donor (Donation), NDMA (NDMA), department (Dispatch) |\n| `item` → `sub_cat` → `spec` | `/api/items/` then `/api/items/<id>/options/` | choose sub category and spec when the item has them |\n| storage locations | `/api/storage-location/` | `type_name` District / Warehouse decides what needs approval |\n| sheds | `/api/storage-shed/?storage_location=<id>` | optional; a shed number (1 for Shed-1) is also accepted |\n",
       "item": [
         {
           "name": "Transaction types",
@@ -364,7 +364,7 @@
                 ""
               ]
             },
-            "description": "Serviceable, Non Serviceable, Repairable.",
+            "description": "Serviceable (1), Non Serviceable (2).",
             "auth": {
               "type": "bearer",
               "bearer": [
@@ -383,6 +383,53 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Conditions of a status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/item-condition/?status=2",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "item-condition",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "2"
+                }
+              ]
+            },
+            "description": "Second level under the status: load it when the user picks the status. Serviceable has Ready to Use (filled in automatically); Non Serviceable has Repairable, Expired and Beyond Repair (one must be chosen).",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_warehouse}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('3 conditions', () => pm.expect(pm.response.json().length).to.be.at.least(3));"
                 ]
               }
             }
@@ -934,6 +981,115 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Receipt with shelf life (expiry worked out)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/transactions/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "transactions",
+                ""
+              ]
+            },
+            "description": "`shelf_life_months` with `manufacturing_date` sets `expiry_date` (here 2027-07-15) when none is given.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_warehouse}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"txn_date\": \"2026-10-13\",\n  \"item\": \"{{item}}\",\n  \"sub_cat\": \"{{sub_cat}}\",\n  \"spec\": \"{{spec}}\",\n  \"status\": 1,\n  \"txn_type\": 2,\n  \"quantity\": 1,\n  \"party\": \"{{supplier}}\",\n  \"manufacturing_date\": \"2026-01-15\",\n  \"shelf_life_months\": 18\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+                  "pm.test('expiry set', () => pm.expect(pm.response.json().expiry_date).to.eql('2027-07-15'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Non Serviceable receipt needs a condition",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/transactions/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "transactions",
+                ""
+              ]
+            },
+            "description": "`{\"condition\": [\"Choose the condition of the Non Serviceable stock.\"]}`",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token_warehouse}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"txn_date\": \"2026-10-13\",\n  \"item\": \"{{item}}\",\n  \"sub_cat\": \"{{sub_cat}}\",\n  \"spec\": \"{{spec}}\",\n  \"status\": 2,\n  \"txn_type\": 2,\n  \"quantity\": 1,\n  \"party\": \"{{supplier}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 400', () => pm.response.to.have.status(400));"
                 ]
               }
             }
@@ -1615,7 +1771,7 @@
                 ""
               ]
             },
-            "description": "Status Change: `from_status` (now) → `status` (new) at one location; the sending location defaults to the user's own. Waits for the inspection team. Attach a damage picture with multipart if needed.",
+            "description": "Status Change: (`from_status`, `from_condition`) now → (`status`, `condition`) new, at one location; the sending location defaults to the user's own and `from_condition` is filled in when the old status has one condition. Waits for the inspection team. Attach a damage picture with multipart if needed.",
             "auth": {
               "type": "bearer",
               "bearer": [
@@ -1628,7 +1784,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"txn_date\": \"2026-10-13\",\n  \"item\": \"{{item}}\",\n  \"sub_cat\": \"{{sub_cat}}\",\n  \"spec\": \"{{spec}}\",\n  \"status\": 3,\n  \"txn_type\": 7,\n  \"quantity\": 1,\n  \"from_status\": 1,\n  \"remarks\": \"Hull cracked\"\n}",
+              "raw": "{\n  \"txn_date\": \"2026-10-13\",\n  \"item\": \"{{item}}\",\n  \"sub_cat\": \"{{sub_cat}}\",\n  \"spec\": \"{{spec}}\",\n  \"status\": 2,\n  \"txn_type\": 7,\n  \"quantity\": 1,\n  \"from_status\": 1,\n  \"condition\": 2,\n  \"remarks\": \"Hull cracked\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1752,7 +1908,7 @@
           ]
         },
         {
-          "name": "District returns 2 fine + 1 repairable (one list)",
+          "name": "District returns 1 fine + 1 repairable (one list)",
           "request": {
             "method": "POST",
             "header": [
@@ -1785,7 +1941,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "[\n  {\n    \"txn_date\": \"2026-10-13\",\n    \"item\": \"{{item}}\",\n    \"sub_cat\": \"{{sub_cat}}\",\n    \"spec\": \"{{spec}}\",\n    \"status\": 1,\n    \"txn_type\": 9,\n    \"quantity\": 2,\n    \"to_storage_location\": \"{{warehouse}}\"\n  },\n  {\n    \"txn_date\": \"2026-10-13\",\n    \"item\": \"{{item}}\",\n    \"sub_cat\": \"{{sub_cat}}\",\n    \"spec\": \"{{spec}}\",\n    \"status\": 3,\n    \"txn_type\": 9,\n    \"quantity\": 1,\n    \"to_storage_location\": \"{{warehouse}}\"\n  }\n]",
+              "raw": "[\n  {\n    \"txn_date\": \"2026-10-13\",\n    \"item\": \"{{item}}\",\n    \"sub_cat\": \"{{sub_cat}}\",\n    \"spec\": \"{{spec}}\",\n    \"status\": 1,\n    \"txn_type\": 9,\n    \"quantity\": 1,\n    \"to_storage_location\": \"{{warehouse}}\"\n  },\n  {\n    \"txn_date\": \"2026-10-13\",\n    \"item\": \"{{item}}\",\n    \"sub_cat\": \"{{sub_cat}}\",\n    \"spec\": \"{{spec}}\",\n    \"status\": 2,\n    \"txn_type\": 9,\n    \"quantity\": 1,\n    \"condition\": 2,\n    \"to_storage_location\": \"{{warehouse}}\"\n  }\n]",
               "options": {
                 "raw": {
                   "language": "json"
@@ -2144,7 +2300,7 @@
                 }
               ]
             },
-            "description": "Filters: `storage_location`, `shed`, `item`, `sub_category`, `spec`, `status`, `owner`, `category`.",
+            "description": "Filters: `storage_location`, `shed`, `item`, `sub_category`, `spec`, `status`, `condition`, `owner`, `category`.",
             "auth": {
               "type": "bearer",
               "bearer": [
@@ -2190,7 +2346,7 @@
                 }
               ]
             },
-            "description": "Totals per item, sub category, spec, status and owner.",
+            "description": "Totals per item, sub category, spec, status, condition and owner.",
             "auth": {
               "type": "bearer",
               "bearer": [
@@ -2236,7 +2392,7 @@
                 }
               ]
             },
-            "description": "Counts approved movements only unless `approval_status` is given. Breakdowns: `by_type`, `by_status`, `by_owner`, `by_party`, `by_category`, `by_storage_location`, `by_item`, `by_item_variant`, `by_month`.",
+            "description": "Counts approved movements only unless `approval_status` is given. Breakdowns: `by_type`, `by_status`, `by_owner`, `by_condition`, `by_party`, `by_category`, `by_storage_location`, `by_item`, `by_item_variant`, `by_month`.",
             "auth": {
               "type": "bearer",
               "bearer": [

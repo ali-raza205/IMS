@@ -20,6 +20,7 @@ from .models import (
 from .permissions import IsMasterOrCreateOnly, IsMasterOrReadOnly, can_decide_demand_line, limit_to_location
 from .serializers import (
     InventoryTransactionSerializer,
+    add_months,
     movement_errors,
     needed_approval,
     sides_used,
@@ -172,6 +173,11 @@ class MovementRuleTests(SimpleTestCase):
         self.assertEqual(self.errors(9, self.warehouse, None, owner=2), {})  # NDMA stock back to NDMA
         self.assertIn('to_storage_location', self.errors(9, self.warehouse, None, owner=1))
 
+    def test_shelf_life_sets_the_expiry_date(self):
+        self.assertEqual(add_months(datetime.date(2026, 1, 31), 1), datetime.date(2026, 2, 28))
+        self.assertEqual(add_months(datetime.date(2026, 10, 15), 24), datetime.date(2028, 10, 15))
+        self.assertEqual(add_months(datetime.date(2026, 12, 1), 1), datetime.date(2027, 1, 1))
+
     def test_what_waits_for_approval(self):
         user = location_user()
         dispatch = TransactionType(type_id=4, direction=TransactionType.OUT)
@@ -191,22 +197,23 @@ class InventoryTransactionTests(SimpleTestCase):
 
     def test_stock_keys_cover_both_sides_of_a_transfer(self):
         txn = InventoryTransaction(
-            item_id=1, sub_cat_id=2, spec_id=3, status_id=1, quantity=5,
+            item_id=1, sub_cat_id=2, spec_id=3, status_id=1, condition_id=1, quantity=5,
             from_storage_location_id=3, from_sto_shed_id=9, to_storage_location_id=1,
         )
-        self.assertEqual(stock_keys(txn), {(3, 9, 1, 2, 3, 1, 1), (1, None, 1, 2, 3, 1, 1)})
+        self.assertEqual(stock_keys(txn), {(3, 9, 1, 2, 3, 1, 1, 1), (1, None, 1, 2, 3, 1, 1, 1)})
 
     def test_handing_ndma_stock_to_pdma_takes_it_from_ndma(self):
-        txn = InventoryTransaction(item_id=1, sub_cat_id=None, spec_id=None, status_id=1, quantity=5, owner_id=1,
+        txn = InventoryTransaction(item_id=1, sub_cat_id=None, spec_id=None, status_id=1, condition_id=1, quantity=5, owner_id=1,
                                    from_owner_id=2, from_storage_location_id=6, to_storage_location_id=3)
-        self.assertEqual(stock_keys(txn), {(6, None, 1, None, None, 1, 2), (3, None, 1, None, None, 1, 1)})
+        self.assertEqual(stock_keys(txn), {(6, None, 1, None, None, 1, 2, 1), (3, None, 1, None, None, 1, 1, 1)})
 
-    def test_status_change_takes_stock_from_the_old_status(self):
+    def test_status_change_takes_stock_from_the_old_status_and_condition(self):
         txn = InventoryTransaction(
-            item_id=1, sub_cat_id=None, spec_id=None, from_status_id=1, status_id=2, quantity=3,
+            item_id=1, sub_cat_id=None, spec_id=None, from_status_id=1, from_condition_id=1, status_id=2,
+            condition_id=3, quantity=3,
             from_storage_location_id=1, from_sto_shed_id=4, to_storage_location_id=1, to_sto_shed_id=4,
         )
-        self.assertEqual(stock_keys(txn), {(1, 4, 1, None, None, 1, 1), (1, 4, 1, None, None, 2, 1)})
+        self.assertEqual(stock_keys(txn), {(1, 4, 1, None, None, 1, 1, 1), (1, 4, 1, None, None, 2, 1, 3)})
         self.assertEqual(sides_used(TransactionType.STATUS), ('from', 'to'))
 
     def test_receiving_side_is_not_limited_to_the_users_storage_location(self):
